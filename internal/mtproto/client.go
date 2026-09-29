@@ -32,7 +32,7 @@ func New(store *storage.Store) *Manager {
 	if base == "" {
 		base = "http://mtproto:8081"
 	}
-	return &Manager{store: store, base: base, http: &http.Client{Timeout: 30 * time.Second}}
+	return &Manager{store: store, base: base, http: &http.Client{Timeout: 120 * time.Second}}
 }
 
 // Run keeps the sidecar configured after either container restarts. The

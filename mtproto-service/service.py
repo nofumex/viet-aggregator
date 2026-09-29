@@ -36,13 +36,14 @@ class MTProtoService:
             self.session_string = session_string or ""
             try:
                 await self._create(self.session_string)
-            except Exception:
-                # A pre-sidecar gotd blob or revoked Hydrogram session cannot be
-                # imported. Start a clean client and require normal login.
-                self.session_string = ""
-                self.session_rejected = True
-                await self._stop()
-                await self._create("")
+            except Exception as exc:
+                # Do not destroy a persisted session because of a temporary
+                # network/DNS/Telegram error. Logout/re-login remains available
+                # explicitly through the admin UI.
+                self.status = "error"
+                self.last_error = str(exc)
+                self.session_rejected = False
+                raise
             else:
                 self.session_rejected = False
 
