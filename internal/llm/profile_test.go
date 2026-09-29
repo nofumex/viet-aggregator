@@ -13,6 +13,19 @@ import (
 	"github.com/nofumex/telegram-aggregator/internal/domain"
 )
 
+func TestProfileFieldsContainAllDaNangRankingInputs(t *testing.T) {
+	want := []string{"furnished", "near_beach", "beach_distance_m", "amenities", "utilities"}
+	set := map[string]bool{}
+	for _, field := range ProfileFields {
+		set[field] = true
+	}
+	for _, field := range want {
+		if !set[field] {
+			t.Fatalf("ProfileFields misses %s", field)
+		}
+	}
+}
+
 func TestAnalyzeProfileUsesOneStrictRequest(t *testing.T) {
 	rules := map[string]domain.FieldRule{}
 	for _, key := range ProfileFields {

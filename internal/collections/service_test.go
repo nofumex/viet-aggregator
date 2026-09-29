@@ -18,11 +18,13 @@ type snapshotStore struct {
 	release chan struct{}
 	once    sync.Once
 	calls   int
+	filters []domain.SearchFilter
 }
 
-func (s *snapshotStore) Search(ctx context.Context, _ int64, _ domain.SearchFilter) (domain.SearchPage, error) {
+func (s *snapshotStore) Search(ctx context.Context, _ int64, filter domain.SearchFilter) (domain.SearchPage, error) {
 	s.mu.Lock()
 	s.calls++
+	s.filters = append(s.filters, filter)
 	err := s.err
 	items := append([]domain.Listing(nil), s.items...)
 	s.mu.Unlock()
@@ -149,5 +151,8 @@ func TestSnapshotsAreIsolatedByCityAndPeriod(t *testing.T) {
 	nhaTrang, _ := svc.Get(context.Background(), 1, domain.CityNhaTrang, 7)
 	if len(daNang) != 1 || daNang[0].ID != 1 || len(nhaTrang) != 1 || nhaTrang[0].ID != 2 {
 		t.Fatalf("da_nang=%v nha_trang=%v", daNang, nhaTrang)
+	}
+	if len(store.filters) != 2 || store.filters[0].City != domain.CityDaNang || store.filters[1].City != domain.CityNhaTrang {
+		t.Fatalf("collection searches were not city-scoped: %+v", store.filters)
 	}
 }

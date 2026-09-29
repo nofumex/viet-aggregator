@@ -75,7 +75,7 @@ func main() {
 	go syncService.Run(ctx)
 	go workers.RunReranking(ctx, background, rank, cfg, log)
 	go collectionService.Run(ctx, cfg.CollectionRefreshInterval, cfg.CollectionRefreshTimeout)
-	go rates.RunRefresh(ctx, 12*time.Hour)
+	go rates.RunRefresh(ctx, 15*time.Minute)
 	go func() {
 		if err := bot.Run(ctx); err != nil {
 			log.Error("telegram bot stopped", "error", err)

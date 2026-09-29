@@ -27,3 +27,22 @@ func TestProfileParserNormalizesVNDThousands(t *testing.T) {
 		t.Fatalf("%+v %v", x, e)
 	}
 }
+
+func TestProfileParserExtractsDaNangRankingFields(t *testing.T) {
+	p := domain.ChannelParsingProfile{FieldRules: map[string]domain.FieldRule{
+		"furnished":        {Patterns: []string{`FURN=(?P<value>full)`}, ValueGroup: "value"},
+		"near_beach":       {Patterns: []string{`BEACH=(?P<value>true)`}, ValueGroup: "value", Unit: "boolean"},
+		"beach_distance_m": {Patterns: []string{`DIST=(?P<value>\d+)`}, ValueGroup: "value", ValueType: "integer"},
+		"amenities":        {Patterns: []string{`AMEN=(?P<value>\{[^\n]+\})`}, ValueGroup: "value", Unit: "json"},
+	}}
+	x, err := ParseWithProfile(p, domain.TelegramPost{Text: `FURN=full BEACH=true DIST=350 AMEN={"balcony":true,"pool":false}`}, domain.CityDaNang)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if x.Furnished == nil || *x.Furnished != "full" || x.NearBeach == nil || !*x.NearBeach || x.BeachDistanceM == nil || *x.BeachDistanceM != 350 {
+		t.Fatalf("ranking fields not extracted: %+v", x)
+	}
+	if !x.Amenities["balcony"] || x.Amenities["pool"] {
+		t.Fatalf("amenities=%v", x.Amenities)
+	}
+}

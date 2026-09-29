@@ -63,3 +63,16 @@ func TestStaleRateSurvivesRefreshError(t *testing.T) {
 		t.Fatalf("bounded retries=%d", calls)
 	}
 }
+
+func TestCachedVNDToRUBNeverPerformsHTTP(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer srv.Close()
+	c := &CBR{client: srv.Client(), url: srv.URL, rate: .003}
+	if got := c.CachedVNDToRUB(); got != .003 {
+		t.Fatalf("rate=%v", got)
+	}
+	if calls != 0 {
+		t.Fatalf("cached UI read performed %d HTTP calls", calls)
+	}
+}

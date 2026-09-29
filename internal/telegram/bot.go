@@ -577,7 +577,7 @@ func (b *Bot) showMarket(ctx context.Context, q *CallbackQuery, city string) {
 	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, text, back("menu"))
 }
 func (b *Bot) showCollections(ctx context.Context, q *CallbackQuery) {
-	k := Markup{[][]Button{{cb("🇻🇳 Дананг", "colcity:"+domain.CityDaNang), cb("🇻🇳 Нячанг", "colcity:"+domain.CityNhaTrang)}, {cb("← Меню", "menu")}}}
+	k := collectionCityMarkup()
 	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 Подборки</b>\n\nВыберите город. Объявления разных городов ранжируются независимо.", k)
 }
 
@@ -586,7 +586,7 @@ func (b *Bot) showCollectionPeriods(ctx context.Context, q *CallbackQuery, p []s
 		return
 	}
 	city := p[1]
-	k := Markup{[][]Button{{cb("Сегодня", "col:"+city+":1"), cb("7 дней", "col:"+city+":7"), cb("30 дней", "col:"+city+":30")}, {cb("← Города", "collections")}}}
+	k := collectionPeriodMarkup(city)
 	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 Подборки · "+cityLabel(city)+"</b>\n\nВыберите период:", k)
 }
 func (b *Bot) runCollection(ctx context.Context, q *CallbackQuery, p []string) {
@@ -643,6 +643,14 @@ func cityLabel(city string) string {
 	return "Дананг"
 }
 
+func collectionCityMarkup() Markup {
+	return Markup{[][]Button{{cb("🇻🇳 Дананг", "colcity:"+domain.CityDaNang), cb("🇻🇳 Нячанг", "colcity:"+domain.CityNhaTrang)}, {cb("← Меню", "menu")}}}
+}
+
+func collectionPeriodMarkup(city string) Markup {
+	return Markup{[][]Button{{cb("Сегодня", "col:"+city+":1"), cb("7 дней", "col:"+city+":7"), cb("30 дней", "col:"+city+":30")}, {cb("← Города", "collections")}}}
+}
+
 func (b *Bot) showAdmin(ctx context.Context, q *CallbackQuery) {
 	k := Markup{[][]Button{{cb("Telegram Channels", "agroups")}, {cb("← Меню", "menu")}}}
 	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🛠 Админка</b>\n\nИсточник: публичные Telegram web preview без пользовательской авторизации.", k)
@@ -688,8 +696,12 @@ func (b *Bot) showGroup(ctx context.Context, q *CallbackQuery, p []string) {
 	if g.LastError != "" {
 		text += "\nОшибка: <code>" + html.EscapeString(truncate(g.LastError, 300)) + "</code>"
 	}
-	k := Markup{[][]Button{{cb("🔄 Синхронизировать", fmt.Sprintf("async:%d", id)), cb("🔌 Проверить", fmt.Sprintf("acheck:%d", id))}, {cb("♻️ Переанализировать структуру", fmt.Sprintf("areanalyze:%d", id))}, {cb("✏️ Имя", fmt.Sprintf("arename:%d", id)), cb("⏱ Интервал", fmt.Sprintf("apoll:%d", id))}, {cb(map[bool]string{true: "⏸ Выключить", false: "▶️ Включить"}[g.Enabled], fmt.Sprintf("atoggle:%d", id))}, {cb("🗑 Удалить", fmt.Sprintf("adel:%d:confirm", id))}, {cb("← Каналы", "agroups")}}}
+	k := channelAdminMarkup(id, g.Enabled)
 	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, text, k)
+}
+
+func channelAdminMarkup(id int64, enabled bool) Markup {
+	return Markup{[][]Button{{cb("🔄 Синхронизировать", fmt.Sprintf("async:%d", id)), cb("🔌 Проверить", fmt.Sprintf("acheck:%d", id))}, {cb("♻️ Переанализировать структуру", fmt.Sprintf("areanalyze:%d", id))}, {cb("✏️ Имя", fmt.Sprintf("arename:%d", id)), cb("⏱ Интервал", fmt.Sprintf("apoll:%d", id))}, {cb(map[bool]string{true: "⏸ Выключить", false: "▶️ Включить"}[enabled], fmt.Sprintf("atoggle:%d", id))}, {cb("🗑 Удалить", fmt.Sprintf("adel:%d:confirm", id))}, {cb("← Каналы", "agroups")}}}
 }
 func (b *Bot) toggleGroup(ctx context.Context, q *CallbackQuery, p []string) {
 	if len(p) < 2 {

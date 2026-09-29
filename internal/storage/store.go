@@ -47,6 +47,8 @@ func Open(ctx context.Context, url string, poolSize ...int) (*Store, error) {
 func (s *Store) Close() { s.DB.Close() }
 
 const channelCols = `id,username,url,name,city,enabled,polling_interval_seconds,parsing_profile,profile_status,profile_error,last_success_at,last_attempt_at,last_message_at,coalesce(last_message_id,0),posts_total,new_posts_last_run,consecutive_errors,last_error,next_poll_at,created_at`
+const dueProfileStatuses = "('pending','ready','error')"
+const studioSearchPredicate = "(l.bedrooms=0 OR l.property_type='studio')"
 
 func scanChannel(row pgx.Row) (domain.Channel, error) {
 	var c domain.Channel
@@ -82,7 +84,7 @@ func (s *Store) Channels(ctx context.Context) ([]domain.Channel, error) {
 	return s.channels(ctx, "ORDER BY enabled DESC,name")
 }
 func (s *Store) DueChannels(ctx context.Context, limit int) ([]domain.Channel, error) {
-	return s.channels(ctx, "WHERE enabled AND next_poll_at<=now() AND profile_status IN ('pending','ready','error') ORDER BY next_poll_at LIMIT $1", limit)
+	return s.channels(ctx, "WHERE enabled AND next_poll_at<=now() AND profile_status IN "+dueProfileStatuses+" ORDER BY next_poll_at LIMIT $1", limit)
 }
 func (s *Store) EnabledChannels(ctx context.Context) ([]domain.Channel, error) {
 	return s.channels(ctx, "WHERE enabled ORDER BY id")
@@ -255,6 +257,12 @@ func (s *Store) Search(ctx context.Context, user int64, f domain.SearchFilter) (
 	args := []any{user}
 	where := []string{"l.extraction_status='success'", "l.rent_min IS NOT NULL", "NOT EXISTS(SELECT 1 FROM hidden_listings h WHERE h.telegram_user_id=$1 AND h.listing_id=l.id)"}
 	add := func(cond string, v any) { args = append(args, v); where = append(where, fmt.Sprintf(cond, len(args))) }
+	if f.MaxResults > 0 {
+		// Bound the candidate set before applying per-user visibility. This
+		// prevents hidden recent items from being backfilled with listings
+		// older than the globally latest window.
+		add("l.id IN (SELECT recent.id FROM listings recent JOIN posts recent_post ON recent_post.id=recent.post_id WHERE recent.extraction_status='success' AND recent.rent_min IS NOT NULL ORDER BY recent_post.published_at DESC,recent.id DESC LIMIT $%d)", min(f.MaxResults, 500))
+	}
 	if f.City != "" {
 		add("l.city=$%d", f.City)
 	}
@@ -277,14 +285,14 @@ func (s *Store) Search(ctx context.Context, user int64, f domain.SearchFilter) (
 	}
 	if f.Bedrooms != nil {
 		if *f.Bedrooms == 0 {
-			where = append(where, "(l.bedrooms=0 OR l.property_type='studio')")
+			where = append(where, studioSearchPredicate)
 		} else {
 			add("l.bedrooms=$%d", *f.Bedrooms)
 		}
 	}
 	if f.PropertyType != "" {
 		if f.PropertyType == "studio" {
-			where = append(where, "(l.property_type='studio' OR l.bedrooms=0)")
+			where = append(where, studioSearchPredicate)
 		} else {
 			add("l.property_type=$%d", f.PropertyType)
 		}
