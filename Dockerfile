@@ -22,11 +22,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S app \
-    && adduser -S -G app app
-
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/bot /usr/local/bin/bot
+
+RUN addgroup -S app && adduser -S -G app app
 
 USER app
 
