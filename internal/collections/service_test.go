@@ -58,7 +58,7 @@ func TestGetNeverWaitsForBackgroundRefresh(t *testing.T) {
 	<-store.started
 
 	started := time.Now()
-	_, err := svc.Get(context.Background(), 123, 7)
+	_, err := svc.Get(context.Background(), 123, domain.CityDaNang, 7)
 	if !errors.Is(err, ErrSnapshotNotReady) {
 		t.Fatalf("err=%v", err)
 	}
@@ -69,7 +69,7 @@ func TestGetNeverWaitsForBackgroundRefresh(t *testing.T) {
 	close(store.release)
 	deadline := time.Now().Add(time.Second)
 	for {
-		items, getErr := svc.Get(context.Background(), 123, 1)
+		items, getErr := svc.Get(context.Background(), 123, domain.CityDaNang, 1)
 		if getErr == nil {
 			if len(items) != 1 || items[0].ID != 1 {
 				t.Fatalf("items=%+v", items)
@@ -88,17 +88,17 @@ func TestGetNeverWaitsForBackgroundRefresh(t *testing.T) {
 func TestFailedRefreshKeepsLastReadySnapshot(t *testing.T) {
 	store := &snapshotStore{items: []domain.Listing{eligibleListing(10)}}
 	svc := newService(store, nil)
-	if err := svc.refreshPeriod(context.Background(), 7); err != nil {
+	if err := svc.refreshPeriod(context.Background(), domain.CityDaNang, 7); err != nil {
 		t.Fatal(err)
 	}
 	store.mu.Lock()
 	store.items = []domain.Listing{eligibleListing(20)}
 	store.err = errors.New("database busy")
 	store.mu.Unlock()
-	if err := svc.refreshPeriod(context.Background(), 7); err == nil {
+	if err := svc.refreshPeriod(context.Background(), domain.CityDaNang, 7); err == nil {
 		t.Fatal("refresh unexpectedly succeeded")
 	}
-	items, err := svc.Get(context.Background(), 1, 7)
+	items, err := svc.Get(context.Background(), 1, domain.CityDaNang, 7)
 	if err != nil || len(items) != 1 || items[0].ID != 10 {
 		t.Fatalf("items=%+v err=%v", items, err)
 	}
@@ -107,7 +107,7 @@ func TestFailedRefreshKeepsLastReadySnapshot(t *testing.T) {
 func TestRefreshInProgressServesPreviousSnapshot(t *testing.T) {
 	store := &snapshotStore{items: []domain.Listing{eligibleListing(10)}}
 	svc := newService(store, nil)
-	if err := svc.refreshPeriod(context.Background(), 7); err != nil {
+	if err := svc.refreshPeriod(context.Background(), domain.CityDaNang, 7); err != nil {
 		t.Fatal(err)
 	}
 	store.mu.Lock()
@@ -118,10 +118,10 @@ func TestRefreshInProgressServesPreviousSnapshot(t *testing.T) {
 	started, release := store.started, store.release
 	store.mu.Unlock()
 	done := make(chan error, 1)
-	go func() { done <- svc.refreshPeriod(context.Background(), 7) }()
+	go func() { done <- svc.refreshPeriod(context.Background(), domain.CityDaNang, 7) }()
 	<-started
 
-	items, err := svc.Get(context.Background(), 1, 7)
+	items, err := svc.Get(context.Background(), 1, domain.CityDaNang, 7)
 	if err != nil || len(items) != 1 || items[0].ID != 10 {
 		t.Fatalf("items=%+v err=%v", items, err)
 	}
@@ -129,8 +129,25 @@ func TestRefreshInProgressServesPreviousSnapshot(t *testing.T) {
 	if err = <-done; err != nil {
 		t.Fatal(err)
 	}
-	items, err = svc.Get(context.Background(), 1, 7)
+	items, err = svc.Get(context.Background(), 1, domain.CityDaNang, 7)
 	if err != nil || len(items) != 1 || items[0].ID != 20 {
 		t.Fatalf("updated items=%+v err=%v", items, err)
+	}
+}
+
+func TestSnapshotsAreIsolatedByCityAndPeriod(t *testing.T) {
+	store := &snapshotStore{items: []domain.Listing{eligibleListing(1)}}
+	svc := newService(store, nil)
+	if err := svc.refreshPeriod(context.Background(), domain.CityDaNang, 7); err != nil {
+		t.Fatal(err)
+	}
+	store.items = []domain.Listing{eligibleListing(2)}
+	if err := svc.refreshPeriod(context.Background(), domain.CityNhaTrang, 7); err != nil {
+		t.Fatal(err)
+	}
+	daNang, _ := svc.Get(context.Background(), 1, domain.CityDaNang, 7)
+	nhaTrang, _ := svc.Get(context.Background(), 1, domain.CityNhaTrang, 7)
+	if len(daNang) != 1 || daNang[0].ID != 1 || len(nhaTrang) != 1 || nhaTrang[0].ID != 2 {
+		t.Fatalf("da_nang=%v nha_trang=%v", daNang, nhaTrang)
 	}
 }

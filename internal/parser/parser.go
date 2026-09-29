@@ -121,11 +121,22 @@ func ParseWithProfile(profile domain.ChannelParsingProfile, post domain.Telegram
 	setInt("lease_months_min", &out.LeaseMonthsMin)
 	setFloat("area_m2", &out.AreaM2)
 	setString("availability", &out.Availability)
+	setString("furnished", &out.Furnished)
+	setBool("near_beach", &out.NearBeach)
+	setInt("beach_distance_m", &out.BeachDistanceM)
 	setString("location_original", &out.LocationOriginal)
 	setBool("is_oceanus", &out.IsOceanus)
 	setBool("near_oceanus", &out.NearOceanus)
 	if v, ok := values["utilities"].(map[string]any); ok {
 		out.Utilities = v
+	}
+	if v, ok := values["amenities"].(map[string]any); ok {
+		out.Amenities = make(map[string]bool, len(v))
+		for key, raw := range v {
+			if enabled, ok := raw.(bool); ok {
+				out.Amenities[key] = enabled
+			}
+		}
 	}
 	for _, v := range values {
 		if v != nil {

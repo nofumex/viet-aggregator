@@ -114,9 +114,10 @@ func (s *Service) SyncChannel(ctx context.Context, c domain.Channel) (result dom
 			return result, err
 		}
 	}
+	profileCreated := false
 	if c.Profile == nil || c.ProfileStatus != "ready" {
 		var sample telegramfeed.FetchResult
-		sample, err = s.feed.Fetch(ctx, telegramfeed.FetchRequest{Username: c.Username, Limit: 20})
+		sample, err = s.feed.Fetch(ctx, telegramfeed.FetchRequest{Username: c.Username, Limit: 5})
 		if err != nil {
 			s.store.FailProfile(context.WithoutCancel(ctx), c.ID, err)
 			return result, err
@@ -147,11 +148,17 @@ func (s *Service) SyncChannel(ctx context.Context, c domain.Channel) (result dom
 		}
 		c.Profile = &profile
 		c.ProfileStatus = "ready"
+		profileCreated = true
 		if s.onProfileReady != nil {
 			go s.onProfileReady(c, profile)
 		}
 	}
 	limit, after := 500, c.LastMessageID
+	if profileCreated {
+		// A newly created or manually rebuilt profile must be applied again to
+		// the recent stored window, not only to posts newer than the last sync.
+		after = 0
+	}
 	var fetched telegramfeed.FetchResult
 	fetched, err = s.feed.Fetch(ctx, telegramfeed.FetchRequest{Username: c.Username, AfterID: after, Limit: limit})
 	if err != nil {
@@ -207,6 +214,12 @@ func applyExtraction(l *domain.Listing, x domain.ProfileExtraction) {
 	l.IsOceanus = x.IsOceanus
 	l.NearOceanus = x.NearOceanus
 	l.Utilities = x.Utilities
+	l.Amenities = x.Amenities
+	if l.Amenities == nil {
+		l.Amenities = map[string]bool{}
+	}
+	l.NearBeach = x.NearBeach
+	l.BeachDistanceM = x.BeachDistanceM
 	l.Confidence = x.Confidence
 	if l.Confidence == nil {
 		l.Confidence = domain.Confidence{}
@@ -240,6 +253,9 @@ func applyExtraction(l *domain.Listing, x domain.ProfileExtraction) {
 	}
 	if x.Availability != nil {
 		l.Availability = *x.Availability
+	}
+	if x.Furnished != nil {
+		l.Furnished = *x.Furnished
 	}
 	if x.LocationOriginal != nil {
 		l.LocationOriginal = *x.LocationOriginal

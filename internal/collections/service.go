@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -29,7 +30,7 @@ type snapshot struct {
 type Service struct {
 	store     collectionStore
 	mu        sync.RWMutex
-	snapshots map[int]snapshot
+	snapshots map[string]snapshot
 	log       *slog.Logger
 }
 
@@ -47,14 +48,14 @@ func newService(s collectionStore, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{store: s, snapshots: map[int]snapshot{}, log: log}
+	return &Service{store: s, snapshots: map[string]snapshot{}, log: log}
 }
 
 // Get is UI-only: it never performs database work or reranking.
-func (s *Service) Get(_ context.Context, _ int64, days int) ([]domain.CollectionItem, error) {
+func (s *Service) Get(_ context.Context, _ int64, city string, days int) ([]domain.CollectionItem, error) {
 	days = normalizedDays(days)
 	s.mu.RLock()
-	current, ok := s.snapshots[days]
+	current, ok := s.snapshots[snapshotKey(city, days)]
 	s.mu.RUnlock()
 	if !ok {
 		return nil, ErrSnapshotNotReady
@@ -72,18 +73,17 @@ func (s *Service) Run(ctx context.Context, interval, refreshTimeout time.Duratio
 		refreshTimeout = 90 * time.Second
 	}
 	refreshAll := func() {
-		for _, days := range []int{1, 7, 30} {
-			if ctx.Err() != nil {
-				return
-			}
-			refreshCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
-			err := s.refreshPeriod(refreshCtx, days)
-			cancel()
-			if err != nil {
-				if ctx.Err() == nil {
-					s.log.Warn("collection snapshot refresh failed", "days", days, "error", err)
+		for _, city := range []string{domain.CityDaNang, domain.CityNhaTrang} {
+			for _, days := range []int{1, 7, 30} {
+				if ctx.Err() != nil {
+					return
 				}
-				continue
+				refreshCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+				err := s.refreshPeriod(refreshCtx, city, days)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					s.log.Warn("collection snapshot refresh failed", "city", city, "days", days, "error", err)
+				}
 			}
 		}
 	}
@@ -101,15 +101,15 @@ func (s *Service) Run(ctx context.Context, interval, refreshTimeout time.Duratio
 	}
 }
 
-func (s *Service) refreshPeriod(ctx context.Context, days int) error {
-	items, stats, err := s.build(ctx, days)
+func (s *Service) refreshPeriod(ctx context.Context, city string, days int) error {
+	items, stats, err := s.build(ctx, city, days)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.snapshots[normalizedDays(days)] = snapshot{items: items, builtAt: time.Now().UTC()}
+	s.snapshots[snapshotKey(city, days)] = snapshot{items: items, builtAt: time.Now().UTC()}
 	s.mu.Unlock()
-	s.logBuilt(days, items, stats)
+	s.logBuilt(city, days, items, stats)
 	return nil
 }
 
@@ -117,13 +117,13 @@ type buildStats struct {
 	totalPeriod, normalized, qualityPassed int
 }
 
-func (s *Service) build(ctx context.Context, days int) ([]domain.CollectionItem, buildStats, error) {
+func (s *Service) build(ctx context.Context, city string, days int) ([]domain.CollectionItem, buildStats, error) {
 	after := time.Now().Add(-time.Duration(normalizedDays(days)) * 24 * time.Hour)
 	const pageSize = 250
 	var candidates []domain.Listing
 	var stats buildStats
 	for offset := 0; ; offset += pageSize {
-		page, err := s.store.Search(ctx, 0, domain.SearchFilter{FreshAfter: &after, Sort: "score", Limit: pageSize, Offset: offset})
+		page, err := s.store.Search(ctx, 0, domain.SearchFilter{City: city, FreshAfter: &after, Sort: "score", Limit: pageSize, Offset: offset})
 		if err != nil {
 			return nil, stats, err
 		}
@@ -154,8 +154,8 @@ func (s *Service) build(ctx context.Context, days int) ([]domain.CollectionItem,
 	return items, stats, nil
 }
 
-func (s *Service) logBuilt(days int, items []domain.CollectionItem, stats buildStats) {
-	attrs := []any{"days", days, "total_period", stats.totalPeriod, "normalized", stats.normalized, "quality_passed", stats.qualityPassed, "shortlist", min(stats.qualityPassed, 40), "selected", len(items)}
+func (s *Service) logBuilt(city string, days int, items []domain.CollectionItem, stats buildStats) {
+	attrs := []any{"city", city, "days", days, "total_period", stats.totalPeriod, "normalized", stats.normalized, "quality_passed", stats.qualityPassed, "shortlist", min(stats.qualityPassed, 40), "selected", len(items)}
 	if len(items) > 0 {
 		oldest, newest := items[0].PublishedAt, items[0].PublishedAt
 		for _, item := range items {
@@ -169,6 +169,10 @@ func (s *Service) logBuilt(days int, items []domain.CollectionItem, stats buildS
 		attrs = append(attrs, "oldest_selected", oldest, "newest_selected", newest)
 	}
 	s.log.Info("collection snapshot built", attrs...)
+}
+
+func snapshotKey(city string, days int) string {
+	return city + ":" + strconv.Itoa(normalizedDays(days))
 }
 
 func normalizedDays(days int) int {

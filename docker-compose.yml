@@ -1,32 +1,19 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: telegram_aggregator
-      POSTGRES_USER: aggregator
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aggregator -d telegram_aggregator"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
   bot:
     build: .
-    image: telegram-rental-aggregator
+    image: viet-aggregator
+    container_name: viet-aggregator
     restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgres://aggregator:${POSTGRES_PASSWORD}@postgres:5432/telegram_aggregator?sslmode=disable
-    depends_on:
-      postgres:
-        condition: service_healthy
+
+    env_file:
+      - .env
+
+    ports:
+      - "127.0.0.1:8080:8080"
+
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/ready"]
       interval: 15s
-      timeout: 3s
+      timeout: 5s
       retries: 5
-volumes:
-  postgres_data:
+      start_period: 15s

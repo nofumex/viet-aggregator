@@ -74,25 +74,29 @@ type Confidence map[string]float64
 // ProfileExtraction is produced locally by the stored channel profile.
 // Pointers distinguish explicit zero/false from unavailable facts.
 type ProfileExtraction struct {
-	City             *string        `json:"city"`
-	Zone             *string        `json:"zone"`
-	District         *string        `json:"district_area"`
-	Street           *string        `json:"street"`
-	Building         *string        `json:"building_complex"`
-	PropertyType     *string        `json:"property_type"`
-	Bedrooms         *int           `json:"bedrooms"`
-	Rooms            *int           `json:"rooms"`
-	RentVND          *int64         `json:"rent_vnd"`
-	DepositVND       *int64         `json:"deposit_vnd"`
-	LeaseMonthsMin   *int           `json:"lease_months_min"`
-	AreaM2           *float64       `json:"area_m2"`
-	Availability     *string        `json:"availability"`
-	Utilities        map[string]any `json:"utilities"`
-	LocationOriginal *string        `json:"location_original"`
-	IsOceanus        *bool          `json:"is_oceanus"`
-	NearOceanus      *bool          `json:"near_oceanus"`
-	ParsedFields     int            `json:"parsed_fields"`
-	Confidence       Confidence     `json:"confidence"`
+	City             *string         `json:"city"`
+	Zone             *string         `json:"zone"`
+	District         *string         `json:"district_area"`
+	Street           *string         `json:"street"`
+	Building         *string         `json:"building_complex"`
+	PropertyType     *string         `json:"property_type"`
+	Bedrooms         *int            `json:"bedrooms"`
+	Rooms            *int            `json:"rooms"`
+	RentVND          *int64          `json:"rent_vnd"`
+	DepositVND       *int64          `json:"deposit_vnd"`
+	LeaseMonthsMin   *int            `json:"lease_months_min"`
+	AreaM2           *float64        `json:"area_m2"`
+	Availability     *string         `json:"availability"`
+	Utilities        map[string]any  `json:"utilities"`
+	Amenities        map[string]bool `json:"amenities"`
+	Furnished        *string         `json:"furnished"`
+	NearBeach        *bool           `json:"near_beach"`
+	BeachDistanceM   *int            `json:"beach_distance_m"`
+	LocationOriginal *string         `json:"location_original"`
+	IsOceanus        *bool           `json:"is_oceanus"`
+	NearOceanus      *bool           `json:"near_oceanus"`
+	ParsedFields     int             `json:"parsed_fields"`
+	Confidence       Confidence      `json:"confidence"`
 }
 
 type Listing struct {
@@ -144,7 +148,7 @@ type SearchFilter struct {
 	NearBeach, ForeignersAccepted  *bool
 	FreshAfter                     *time.Time
 	Sort                           string
-	Limit, Offset                  int
+	Limit, Offset, MaxResults      int
 }
 
 type SearchPage struct {

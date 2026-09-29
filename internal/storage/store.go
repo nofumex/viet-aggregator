@@ -82,7 +82,7 @@ func (s *Store) Channels(ctx context.Context) ([]domain.Channel, error) {
 	return s.channels(ctx, "ORDER BY enabled DESC,name")
 }
 func (s *Store) DueChannels(ctx context.Context, limit int) ([]domain.Channel, error) {
-	return s.channels(ctx, "WHERE enabled AND next_poll_at<=now() AND profile_status='ready' ORDER BY next_poll_at LIMIT $1", limit)
+	return s.channels(ctx, "WHERE enabled AND next_poll_at<=now() AND profile_status IN ('pending','ready','error') ORDER BY next_poll_at LIMIT $1", limit)
 }
 func (s *Store) EnabledChannels(ctx context.Context) ([]domain.Channel, error) {
 	return s.channels(ctx, "WHERE enabled ORDER BY id")
@@ -147,7 +147,7 @@ func (s *Store) SyncFinished(ctx context.Context, run, id int64, r domain.Channe
 	if syncErr == nil {
 		_, _ = s.DB.Exec(ctx, `UPDATE telegram_channels SET last_success_at=now(),last_message_at=CASE WHEN $2::timestamptz>'epoch' THEN $2 ELSE last_message_at END,last_message_id=GREATEST(last_message_id,$3),posts_total=posts_total+$4,new_posts_last_run=$4,consecutive_errors=0,last_error='',next_poll_at=now()+make_interval(secs=>$5),updated_at=now() WHERE id=$1`, id, r.NewestAt, r.NewestID, r.Inserted, int(poll.Seconds()))
 	} else {
-		_, _ = s.DB.Exec(ctx, `UPDATE telegram_channels SET new_posts_last_run=0,consecutive_errors=consecutive_errors+1,last_error=$2,next_poll_at=now()+make_interval(secs=>LEAST($3*power(2,LEAST(consecutive_errors,6))::int,21600)),updated_at=now() WHERE id=$1`, id, msg, int(poll.Seconds()))
+		_, _ = s.DB.Exec(ctx, `UPDATE telegram_channels SET new_posts_last_run=0,consecutive_errors=consecutive_errors+1,last_error=$2,next_poll_at=CASE WHEN profile_status='error' THEN next_poll_at ELSE now()+make_interval(secs=>LEAST($3*power(2,LEAST(consecutive_errors,6))::int,21600)) END,updated_at=now() WHERE id=$1`, id, msg, int(poll.Seconds()))
 	}
 }
 
@@ -175,23 +175,24 @@ func (s *Store) InsertListing(ctx context.Context, p domain.TelegramPost, l doma
 		}
 	}
 	j := func(v any) []byte { b, _ := json.Marshal(v); return b }
-	_, e = tx.Exec(ctx, `INSERT INTO listings(post_id,city,zone,district,location_original,street,address,building,property_type,bedrooms,rooms,rent_min,rent_max,deposit_amount,lease_months,area_m2,availability,utilities,is_oceanus,near_oceanus,confidence,raw_values,deal_score,score_confidence,extraction_version,extraction_status,profile_parsed_at,last_extraction_error,ranked_at)
-	VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16,NULLIF($17,''),$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NULLIF($28,''),now())
-	ON CONFLICT(post_id) DO UPDATE SET city=$2,zone=NULLIF($3,''),district=NULLIF($4,''),location_original=NULLIF($5,''),street=NULLIF($6,''),address=NULLIF($7,''),building=NULLIF($8,''),property_type=NULLIF($9,''),bedrooms=$10,rooms=$11,rent_min=$12,rent_max=$13,deposit_amount=$14,lease_months=$15,area_m2=$16,availability=NULLIF($17,''),utilities=$18,is_oceanus=$19,near_oceanus=$20,confidence=$21,raw_values=$22,deal_score=$23,score_confidence=$24,extraction_version=$25,extraction_status=$26,profile_parsed_at=$27,last_extraction_error=NULLIF($28,''),ranked_at=now(),updated_at=now()`, postID, l.City, l.Zone, l.District, l.LocationOriginal, l.Street, l.Address, l.Building, l.PropertyType, l.Bedrooms, l.Rooms, l.RentMin, l.RentMax, l.DepositAmount, l.LeaseMonths, l.AreaM2, l.Availability, j(l.Utilities), l.IsOceanus, l.NearOceanus, j(l.Confidence), j(l.RawValues), l.DealScore, l.ScoreConfidence, l.ExtractionVersion, l.ExtractionStatus, l.ProfileParsedAt, l.LastExtractionError)
+	_, e = tx.Exec(ctx, `INSERT INTO listings(post_id,city,zone,district,location_original,street,address,building,property_type,bedrooms,rooms,rent_min,rent_max,deposit_amount,lease_months,area_m2,availability,furnished,near_beach,beach_distance_m,amenities,utilities,is_oceanus,near_oceanus,confidence,raw_values,deal_score,score_confidence,extraction_version,extraction_status,profile_parsed_at,last_extraction_error,ranked_at)
+	VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14,$15,$16,NULLIF($17,''),NULLIF($18,''),$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NULLIF($32,''),now())
+	ON CONFLICT(post_id) DO UPDATE SET city=$2,zone=NULLIF($3,''),district=NULLIF($4,''),location_original=NULLIF($5,''),street=NULLIF($6,''),address=NULLIF($7,''),building=NULLIF($8,''),property_type=NULLIF($9,''),bedrooms=$10,rooms=$11,rent_min=$12,rent_max=$13,deposit_amount=$14,lease_months=$15,area_m2=$16,availability=NULLIF($17,''),furnished=NULLIF($18,''),near_beach=$19,beach_distance_m=$20,amenities=$21,utilities=$22,is_oceanus=$23,near_oceanus=$24,confidence=$25,raw_values=$26,deal_score=$27,score_confidence=$28,extraction_version=$29,extraction_status=$30,profile_parsed_at=$31,last_extraction_error=NULLIF($32,''),ranked_at=now(),updated_at=now()`, postID, l.City, l.Zone, l.District, l.LocationOriginal, l.Street, l.Address, l.Building, l.PropertyType, l.Bedrooms, l.Rooms, l.RentMin, l.RentMax, l.DepositAmount, l.LeaseMonths, l.AreaM2, l.Availability, l.Furnished, l.NearBeach, l.BeachDistanceM, j(l.Amenities), j(l.Utilities), l.IsOceanus, l.NearOceanus, j(l.Confidence), j(l.RawValues), l.DealScore, l.ScoreConfidence, l.ExtractionVersion, l.ExtractionStatus, l.ProfileParsedAt, l.LastExtractionError)
 	if e != nil {
 		return false, e
 	}
 	return isNew, tx.Commit(ctx)
 }
 
-const listingSelect = `SELECT l.id,p.id,p.channel_id,p.channel_username,c.name,p.message_id,p.original_url,p.original_text,p.published_at,l.created_at,l.city,coalesce(l.zone,''),coalesce(l.district,''),coalesce(l.location_original,''),coalesce(l.street,''),coalesce(l.address,''),coalesce(l.building,''),l.rent_min,l.rent_max,l.deposit_amount,l.bedrooms,l.rooms,l.lease_months,l.area_m2,coalesce(l.property_type,''),coalesce(l.availability,''),l.is_oceanus,l.near_oceanus,l.utilities,l.confidence,l.raw_values,l.deal_score,l.score_confidence,CASE WHEN p.photo_url IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(p.photo_url) END,coalesce(l.extraction_version,''),l.extraction_status,l.profile_parsed_at,l.extraction_attempts,l.next_extraction_retry_at,coalesce(l.last_extraction_error,''),l.ranked_at FROM listings l JOIN posts p ON p.id=l.post_id JOIN telegram_channels c ON c.id=p.channel_id`
+const listingSelect = `SELECT l.id,p.id,p.channel_id,p.channel_username,c.name,p.message_id,p.original_url,p.original_text,p.published_at,l.created_at,l.city,coalesce(l.zone,''),coalesce(l.district,''),coalesce(l.location_original,''),coalesce(l.street,''),coalesce(l.address,''),coalesce(l.building,''),l.rent_min,l.rent_max,l.deposit_amount,l.bedrooms,l.rooms,l.lease_months,l.area_m2,coalesce(l.property_type,''),coalesce(l.availability,''),coalesce(l.furnished,''),l.near_beach,l.beach_distance_m,l.amenities,l.is_oceanus,l.near_oceanus,l.utilities,l.confidence,l.raw_values,l.deal_score,l.score_confidence,CASE WHEN p.photo_url IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(p.photo_url) END,coalesce(l.extraction_version,''),l.extraction_status,l.profile_parsed_at,l.extraction_attempts,l.next_extraction_retry_at,coalesce(l.last_extraction_error,''),l.ranked_at FROM listings l JOIN posts p ON p.id=l.post_id JOIN telegram_channels c ON c.id=p.channel_id`
 
 func scanListing(row pgx.Row) (domain.Listing, error) {
 	var l domain.Listing
-	var util, conf, raw, media []byte
-	e := row.Scan(&l.ID, &l.PostID, &l.ChannelID, &l.ChannelUsername, &l.ChannelName, &l.TelegramMessageID, &l.OriginalURL, &l.OriginalText, &l.PublishedAt, &l.CreatedAt, &l.City, &l.Zone, &l.District, &l.LocationOriginal, &l.Street, &l.Address, &l.Building, &l.RentMin, &l.RentMax, &l.DepositAmount, &l.Bedrooms, &l.Rooms, &l.LeaseMonths, &l.AreaM2, &l.PropertyType, &l.Availability, &l.IsOceanus, &l.NearOceanus, &util, &conf, &raw, &l.DealScore, &l.ScoreConfidence, &media, &l.ExtractionVersion, &l.ExtractionStatus, &l.ProfileParsedAt, &l.ExtractionAttempts, &l.NextExtractionRetryAt, &l.LastExtractionError, &l.RankedAt)
+	var amenities, util, conf, raw, media []byte
+	e := row.Scan(&l.ID, &l.PostID, &l.ChannelID, &l.ChannelUsername, &l.ChannelName, &l.TelegramMessageID, &l.OriginalURL, &l.OriginalText, &l.PublishedAt, &l.CreatedAt, &l.City, &l.Zone, &l.District, &l.LocationOriginal, &l.Street, &l.Address, &l.Building, &l.RentMin, &l.RentMax, &l.DepositAmount, &l.Bedrooms, &l.Rooms, &l.LeaseMonths, &l.AreaM2, &l.PropertyType, &l.Availability, &l.Furnished, &l.NearBeach, &l.BeachDistanceM, &amenities, &l.IsOceanus, &l.NearOceanus, &util, &conf, &raw, &l.DealScore, &l.ScoreConfidence, &media, &l.ExtractionVersion, &l.ExtractionStatus, &l.ProfileParsedAt, &l.ExtractionAttempts, &l.NextExtractionRetryAt, &l.LastExtractionError, &l.RankedAt)
 	if e == nil {
 		l.Currency = "VND"
+		_ = json.Unmarshal(amenities, &l.Amenities)
 		_ = json.Unmarshal(util, &l.Utilities)
 		_ = json.Unmarshal(conf, &l.Confidence)
 		_ = json.Unmarshal(raw, &l.RawValues)
@@ -275,10 +276,24 @@ func (s *Store) Search(ctx context.Context, user int64, f domain.SearchFilter) (
 		add("l.rent_min<=$%d", *f.RentMax)
 	}
 	if f.Bedrooms != nil {
-		add("l.bedrooms=$%d", *f.Bedrooms)
+		if *f.Bedrooms == 0 {
+			where = append(where, "(l.bedrooms=0 OR l.property_type='studio')")
+		} else {
+			add("l.bedrooms=$%d", *f.Bedrooms)
+		}
 	}
 	if f.PropertyType != "" {
-		add("l.property_type=$%d", f.PropertyType)
+		if f.PropertyType == "studio" {
+			where = append(where, "(l.property_type='studio' OR l.bedrooms=0)")
+		} else {
+			add("l.property_type=$%d", f.PropertyType)
+		}
+	}
+	if f.Furnished != "" {
+		add("l.furnished=$%d", f.Furnished)
+	}
+	if f.NearBeach != nil {
+		add("l.near_beach=$%d", *f.NearBeach)
 	}
 	if f.AreaMin != nil {
 		add("l.area_m2>=$%d", *f.AreaMin)
@@ -299,16 +314,17 @@ func (s *Store) Search(ctx context.Context, user int64, f domain.SearchFilter) (
 	if e := s.DB.QueryRow(ctx, "SELECT count(*) FROM listings l JOIN posts p ON p.id=l.post_id"+w, args...).Scan(&total); e != nil {
 		return domain.SearchPage{}, e
 	}
+	limit, offset, total := normalizeSearchWindow(f.Limit, f.Offset, f.MaxResults, total)
+	if offset >= total {
+		return domain.SearchPage{Total: total}, nil
+	}
 	order := "l.deal_score DESC,p.published_at DESC,l.id DESC"
 	if f.Sort == "new" {
 		order = "p.published_at DESC,l.id DESC"
 	} else if f.Sort == "price" {
 		order = "l.rent_min ASC,l.id DESC"
 	}
-	if f.Limit < 1 || f.Limit > 500 {
-		f.Limit = 20
-	}
-	args = append(args, f.Limit, f.Offset)
+	args = append(args, limit, offset)
 	rows, e := s.DB.Query(ctx, listingSelect+w+fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", order, len(args)-1, len(args)), args...)
 	if e != nil {
 		return domain.SearchPage{}, e
@@ -323,6 +339,27 @@ func (s *Store) Search(ctx context.Context, user int64, f domain.SearchFilter) (
 		out.Items = append(out.Items, l)
 	}
 	return out, rows.Err()
+}
+
+func normalizeSearchWindow(limit, offset, maxResults, total int) (int, int, int) {
+	if limit < 1 || limit > 250 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if maxResults > 0 {
+		if maxResults > 500 {
+			maxResults = 500
+		}
+		if total > maxResults {
+			total = maxResults
+		}
+		if remaining := total - offset; remaining < limit {
+			limit = remaining
+		}
+	}
+	return limit, offset, total
 }
 func (s *Store) EnsureUser(ctx context.Context, id int64, username, first string) error {
 	_, e := s.DB.Exec(ctx, `INSERT INTO bot_users(telegram_user_id,username,first_name) VALUES($1,$2,$3) ON CONFLICT(telegram_user_id) DO UPDATE SET username=$2,first_name=$3,last_seen_at=now()`, id, username, first)

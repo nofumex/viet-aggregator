@@ -49,8 +49,8 @@ type pageCache struct {
 	filter  *domain.SearchFilter
 }
 
-func NewBot(api *Client, store *storage.Store, sync *syncer.Service, c *collections.Service, admins map[int64]bool, log *slog.Logger, poll time.Duration) *Bot {
-	return &Bot{api: api, store: store, sync: sync, collections: c, rates: exchange.NewCBR(), admins: admins, log: log, defaultPoll: poll, states: map[int64]string{}, filters: map[int64]domain.SearchFilter{}, pages: map[string]pageCache{}}
+func NewBot(api *Client, store *storage.Store, sync *syncer.Service, c *collections.Service, rates exchange.Provider, admins map[int64]bool, log *slog.Logger, poll time.Duration) *Bot {
+	return &Bot{api: api, store: store, sync: sync, collections: c, rates: rates, admins: admins, log: log, defaultPoll: poll, states: map[int64]string{}, filters: map[int64]domain.SearchFilter{}, pages: map[string]pageCache{}}
 }
 
 func (b *Bot) NotifyProfileReady(channel domain.Channel, profile domain.ChannelParsingProfile) {
@@ -120,7 +120,7 @@ func (b *Bot) callback(ctx context.Context, q *CallbackQuery) {
 	case "menu":
 		b.showMenu(ctx, q.Message.Chat.ID, q.Message.MessageID)
 	case "new":
-		f := domain.SearchFilter{Limit: 500, Sort: "new"}
+		f := domain.SearchFilter{Limit: 50, MaxResults: 500, Sort: "new"}
 		b.runSearch(ctx, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, f, "🏠 Новые объявления")
 	case "search":
 		b.showFilters(ctx, q)
@@ -141,6 +141,8 @@ func (b *Bot) callback(ctx context.Context, q *CallbackQuery) {
 		b.showDetails(ctx, q, parts)
 	case "collections":
 		b.showCollections(ctx, q)
+	case "colcity":
+		b.showCollectionPeriods(ctx, q, parts)
 	case "market":
 		city := ""
 		if len(parts) > 1 {
@@ -175,6 +177,17 @@ func (b *Bot) callback(ctx context.Context, q *CallbackQuery) {
 		if b.admins[q.From.ID] && len(parts) > 1 {
 			if id, _ := strconv.ParseInt(parts[1], 10, 64); b.sync.Trigger(id) {
 				b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "Синхронизация поставлена в очередь.", back("agroups"))
+			}
+		}
+	case "areanalyze":
+		if b.admins[q.From.ID] && len(parts) > 1 {
+			id, _ := strconv.ParseInt(parts[1], 10, 64)
+			if err := b.store.SetProfilePending(ctx, id); err != nil {
+				b.fail(ctx, q.Message.Chat.ID, q.Message.MessageID, err)
+			} else if b.sync.Trigger(id) {
+				b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "♻️ Профиль сброшен. Пять свежих постов поставлены на единичный LLM-анализ; новый профиль будет применён к последним объявлениям.", back("ag:"+parts[1]))
+			} else {
+				b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "Профиль сброшен. Фоновый worker подхватит переанализ по расписанию.", back("ag:"+parts[1]))
 			}
 		}
 	case "atoggle":
@@ -363,7 +376,7 @@ func (b *Bot) renderCard(ctx context.Context, chat int64, msg int, token string,
 	if reason := c.reasons[l.ID]; reason != "" {
 		head += fmt.Sprintf("\n\n🔥 <b>#%d</b>\n<i>%s</i>", idx+1, html.EscapeString(reason))
 	}
-	rate := b.vndToRUB(ctx)
+	rate := b.vndToRUB()
 	text := head + "\n\n" + card(l, rate)
 	prev := idx - 1
 	if prev < 0 {
@@ -491,23 +504,16 @@ func (b *Bot) showDetails(ctx context.Context, q *CallbackQuery, p []string) {
 		b.fail(ctx, q.Message.Chat.ID, q.Message.MessageID, e)
 		return
 	}
-	text := card(l, b.vndToRUB(ctx)) + "\n\n<b>Исходное объявление</b>\n" + html.EscapeString(truncate(l.OriginalText, 1800))
+	text := card(l, b.vndToRUB()) + "\n\n<b>Исходное объявление</b>\n" + html.EscapeString(truncate(l.OriginalText, 1800))
 	k := Markup{[][]Button{{urlb("📨 Открыть объявление", l.OriginalURL)}, {cb("← Назад", "menu")}}}
 	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, text, k)
 }
 
-func (b *Bot) vndToRUB(ctx context.Context) float64 {
+func (b *Bot) vndToRUB() float64 {
 	if b.rates == nil {
 		return 0
 	}
-	rate, err := b.rates.VNDToRUB(ctx)
-	if err != nil {
-		if b.log != nil {
-			b.log.Warn("exchange rate unavailable", "error", err)
-		}
-		return 0
-	}
-	return rate
+	return b.rates.CachedVNDToRUB()
 }
 
 func photoURLs(items []string) []string {
@@ -571,18 +577,29 @@ func (b *Bot) showMarket(ctx context.Context, q *CallbackQuery, city string) {
 	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, text, back("menu"))
 }
 func (b *Bot) showCollections(ctx context.Context, q *CallbackQuery) {
-	k := Markup{[][]Button{{cb("Сегодня", "col:1"), cb("7 дней", "col:7"), cb("30 дней", "col:30")}, {cb("← Меню", "menu")}}}
-	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 Подборки</b>\n\nСюда попадают объявления с надёжно извлечённой ценой, достаточными характеристиками и высоким сохранённым рейтингом.", k)
+	k := Markup{[][]Button{{cb("🇻🇳 Дананг", "colcity:"+domain.CityDaNang), cb("🇻🇳 Нячанг", "colcity:"+domain.CityNhaTrang)}, {cb("← Меню", "menu")}}}
+	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 Подборки</b>\n\nВыберите город. Объявления разных городов ранжируются независимо.", k)
+}
+
+func (b *Bot) showCollectionPeriods(ctx context.Context, q *CallbackQuery, p []string) {
+	if len(p) < 2 || (p[1] != domain.CityDaNang && p[1] != domain.CityNhaTrang) {
+		return
+	}
+	city := p[1]
+	k := Markup{[][]Button{{cb("Сегодня", "col:"+city+":1"), cb("7 дней", "col:"+city+":7"), cb("30 дней", "col:"+city+":30")}, {cb("← Города", "collections")}}}
+	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 Подборки · "+cityLabel(city)+"</b>\n\nВыберите период:", k)
 }
 func (b *Bot) runCollection(ctx context.Context, q *CallbackQuery, p []string) {
 	days := 7
-	if len(p) > 1 {
-		days, _ = strconv.Atoi(p[1])
+	if len(p) < 3 || (p[1] != domain.CityDaNang && p[1] != domain.CityNhaTrang) {
+		return
 	}
-	items, e := b.collections.Get(ctx, q.From.ID, days)
+	city := p[1]
+	days, _ = strconv.Atoi(p[2])
+	items, e := b.collections.Get(ctx, q.From.ID, city, days)
 	if e != nil {
 		if errors.Is(e, collections.ErrSnapshotNotReady) {
-			b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 Лучшие "+collections.Title(days)+"</b>\n\nПодборка готовится в фоне. Попробуйте открыть её ещё раз через минуту.", back("collections"))
+			b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 "+cityLabel(city)+" · лучшие "+collections.Title(days)+"</b>\n\nПодборка готовится в фоне. Попробуйте открыть её ещё раз через минуту.", back("colcity:"+city))
 			return
 		}
 		b.fail(ctx, q.Message.Chat.ID, q.Message.MessageID, e)
@@ -613,10 +630,17 @@ func (b *Bot) runCollection(ctx context.Context, q *CallbackQuery, p []string) {
 		reasons[x.ID] = x.Reason
 	}
 	if len(list) == 0 {
-		b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 Лучшие "+collections.Title(days)+"</b>\n\nПока нет вариантов, которые прошли строгую проверку данных и качества. Слабые или неполные объявления в подборку не добавлены.", back("collections"))
+		b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🔥 "+cityLabel(city)+" · лучшие "+collections.Title(days)+"</b>\n\nПока нет вариантов, которые прошли строгую проверку данных и качества. Слабые или неполные объявления в подборку не добавлены.", back("colcity:"+city))
 		return
 	}
-	b.cacheAndShow(ctx, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, list, len(list), "🔥 Лучшие "+collections.Title(days), reasons, nil)
+	b.cacheAndShow(ctx, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, list, len(list), "🔥 "+cityLabel(city)+" · лучшие "+collections.Title(days), reasons, nil)
+}
+
+func cityLabel(city string) string {
+	if city == domain.CityNhaTrang {
+		return "Нячанг"
+	}
+	return "Дананг"
 }
 
 func (b *Bot) showAdmin(ctx context.Context, q *CallbackQuery) {
@@ -664,7 +688,7 @@ func (b *Bot) showGroup(ctx context.Context, q *CallbackQuery, p []string) {
 	if g.LastError != "" {
 		text += "\nОшибка: <code>" + html.EscapeString(truncate(g.LastError, 300)) + "</code>"
 	}
-	k := Markup{[][]Button{{cb("🔄 Синхронизировать", fmt.Sprintf("async:%d", id)), cb("🔌 Проверить", fmt.Sprintf("acheck:%d", id))}, {cb("✏️ Имя", fmt.Sprintf("arename:%d", id)), cb("⏱ Интервал", fmt.Sprintf("apoll:%d", id))}, {cb(map[bool]string{true: "⏸ Выключить", false: "▶️ Включить"}[g.Enabled], fmt.Sprintf("atoggle:%d", id))}, {cb("🗑 Удалить", fmt.Sprintf("adel:%d:confirm", id))}, {cb("← Каналы", "agroups")}}}
+	k := Markup{[][]Button{{cb("🔄 Синхронизировать", fmt.Sprintf("async:%d", id)), cb("🔌 Проверить", fmt.Sprintf("acheck:%d", id))}, {cb("♻️ Переанализировать структуру", fmt.Sprintf("areanalyze:%d", id))}, {cb("✏️ Имя", fmt.Sprintf("arename:%d", id)), cb("⏱ Интервал", fmt.Sprintf("apoll:%d", id))}, {cb(map[bool]string{true: "⏸ Выключить", false: "▶️ Включить"}[g.Enabled], fmt.Sprintf("atoggle:%d", id))}, {cb("🗑 Удалить", fmt.Sprintf("adel:%d:confirm", id))}, {cb("← Каналы", "agroups")}}}
 	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, text, k)
 }
 func (b *Bot) toggleGroup(ctx context.Context, q *CallbackQuery, p []string) {

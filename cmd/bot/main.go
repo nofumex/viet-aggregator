@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/nofumex/telegram-aggregator/internal/collections"
 	"github.com/nofumex/telegram-aggregator/internal/config"
+	"github.com/nofumex/telegram-aggregator/internal/exchange"
 	"github.com/nofumex/telegram-aggregator/internal/llm"
 	"github.com/nofumex/telegram-aggregator/internal/ranking"
 	"github.com/nofumex/telegram-aggregator/internal/storage"
@@ -61,7 +62,8 @@ func main() {
 	syncService := syncer.New(background, telegramfeed.New(), profileLLM, rank, log, cfg.WorkerConcurrency)
 	collectionService := collections.NewWithRanking(background, rank, log)
 	api := tg.NewClient(cfg.TelegramToken)
-	bot := tg.NewBot(api, store, syncService, collectionService, cfg.AdminIDs, log, cfg.DefaultPoll)
+	rates := exchange.NewCBR()
+	bot := tg.NewBot(api, store, syncService, collectionService, rates, cfg.AdminIDs, log, cfg.DefaultPoll)
 	syncService.SetProfileReadyHandler(bot.NotifyProfileReady)
 	server := healthServer(cfg.HTTPAddr, store)
 	go func() {
@@ -73,6 +75,7 @@ func main() {
 	go syncService.Run(ctx)
 	go workers.RunReranking(ctx, background, rank, cfg, log)
 	go collectionService.Run(ctx, cfg.CollectionRefreshInterval, cfg.CollectionRefreshTimeout)
+	go rates.RunRefresh(ctx, 12*time.Hour)
 	go func() {
 		if err := bot.Run(ctx); err != nil {
 			log.Error("telegram bot stopped", "error", err)

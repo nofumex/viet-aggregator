@@ -18,7 +18,7 @@ import (
 const dailyURL = "https://www.cbr.ru/scripts/XML_daily.asp"
 
 type Provider interface {
-	VNDToRUB(context.Context) (float64, error)
+	CachedVNDToRUB() float64
 }
 
 // CBR reads the official daily VND/RUB rate and caches it. If a refresh fails,
@@ -38,6 +38,36 @@ type CBR struct {
 
 func NewCBR() *CBR {
 	return &CBR{client: &http.Client{Timeout: 5 * time.Second}, url: dailyURL, ttl: 12 * time.Hour}
+}
+
+// CachedVNDToRUB is the UI-safe read path. It only reads memory and never
+// waits for DNS, HTTP, or a remote server, even when the value is stale.
+func (c *CBR) CachedVNDToRUB() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rate
+}
+
+// RunRefresh keeps the cache warm outside request/UI goroutines.
+func (c *CBR) RunRefresh(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = c.ttl
+	}
+	if interval <= 0 {
+		interval = 12 * time.Hour
+	}
+	refresh := func() { _, _ = c.VNDToRUB(ctx) }
+	refresh()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
+	}
 }
 
 func (c *CBR) VNDToRUB(ctx context.Context) (float64, error) {
