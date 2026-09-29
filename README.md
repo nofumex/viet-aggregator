@@ -1,6 +1,6 @@
 # Telegram Rental Aggregator
 
-Telegram-бот агрегирует аренду из публичных каналов через `https://t.me/s/<username>` без пользовательской Telegram-авторизации. Поддерживаются Da Nang и Nha Trang, быстрые cached-страницы, фильтры, избранное, скрытие объявлений, статистика, фоновые подборки и административная панель.
+Telegram-бот агрегирует аренду из публичных каналов через `https://t.me/s/<username>` и из публичных групп через один долгоживущий MTProto user-client. Web-preview каналов не зависит от MTProto account. Поддерживаются Da Nang и Nha Trang, быстрые cached-страницы, фильтры, избранное, скрытие объявлений, статистика, фоновые подборки и административная панель.
 
 ## Запуск
 
@@ -13,9 +13,11 @@ docker compose up -d --build
 
 Миграции выполняются ботом автоматически. Health checks: `/live` и `/ready`.
 
-## Добавление канала
+## Telegram Account и добавление источника
 
-Откройте `🛠 Админка → Telegram Channels → Добавить`, выберите город и отправьте канал в одном из форматов:
+Для групп сначала откройте `🛠 Админка → Telegram Account`. По умолчанию используются API ID `2040` и API Hash Telegram Desktop; оба значения можно изменить. Укажите телефон, код Telegram и, если потребуется, пароль 2FA. MTProto session/auth key хранится в PostgreSQL volume, поэтому переживает restart, rebuild и deploy. Logout удаляет session.
+
+Затем откройте `🛠 Админка → Telegram Channels → Добавить`, выберите город и отправьте канал или публичную группу в одном из форматов:
 
 - `https://t.me/lowrentnt`
 - `https://t.me/s/lowrentnt`
@@ -23,26 +25,29 @@ docker compose up -d --build
 - `@lowrentnt`
 - `lowrentnt`
 
-Ссылка нормализуется до canonical username. В фоне бот:
+Ссылка нормализуется до canonical username. Broadcast channel автоматически остаётся на существующем web-preview scraper, public group/supergroup использует общий MTProto client и официальный `messages.getHistory`. В фоне бот:
 
-1. получает минимум пять реальных постов;
-2. делает единственный LLM-вызов и сохраняет машиноисполняемый `ChannelParsingProfile`;
+1. получает до 20 последних непустых сообщений (минимум пять);
+2. делает один LLM-вызов и сохраняет машиноисполняемый `ChannelParsingProfile`, включая channel-specific include/exclude правила `is_listing`;
 3. сообщает администратору о готовом профиле;
 4. импортирует последние 500 сообщений;
 5. при следующих синхронизациях получает только новые сообщения.
 
-LLM больше нигде не вызывается. Каждый пост разбирается локально только регулярными выражениями и mappings из сохранённого профиля канала. Глобального rule/regex fallback нет. Если профиль не извлёк цену и ещё минимум два значения, оригинал сохраняется со статусом `unparsed` и не попадает в пользовательскую выдачу.
+LLM больше нигде не вызывается, кроме явной админской команды re-analyze. При sync каждое сообщение сначала проходит локальный `is_listing`; нерелевантное сохраняется как `ignored_non_listing`, а объявление разбирается только regex/mappings из сохранённого профиля. Глобального fallback нет. Если профиль не извлёк цену и ещё минимум два значения, оригинал сохраняется как `unparsed`. Оба статуса исключены из New/Search/Collections/Market.
 
 ## Архитектура
 
 ```text
-Telegram web preview → per-channel profile parser → PostgreSQL
+Telegram web preview ─┐
+                      ├→ local is_listing → per-source profile parser → PostgreSQL
+one MTProto client  ──┘
                                              ├→ city-aware deterministic ranking
                                              ├→ cached collection snapshots
                                              └→ Telegram UI
 ```
 
 - `internal/telegramfeed` — URL normalization и HTML parsing публичного preview;
+- `internal/mtproto` — единственный reconnecting user-client, auth flow, history и первое фото групп;
 - `internal/llm` — только создание профиля при добавлении канала;
 - `internal/parser` — локальное исполнение сохранённого профиля;
 - `internal/location` — data-driven normalization географии Nha Trang;

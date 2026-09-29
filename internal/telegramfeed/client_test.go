@@ -22,3 +22,10 @@ func TestParseTelegramPreview(t *testing.T) {
 		t.Fatalf("unexpected: %+v", got)
 	}
 }
+
+func TestParseTelegramPreviewDetectsPublicGroup(t *testing.T) {
+	doc, _ := xhtml.Parse(strings.NewReader(`<div class="tgme_channel_info_counter"><span class="counter_value">12 345</span> members</div>`))
+	if got := parseDocument(doc, "rentgroup").Kind; got != "mtproto_group" {
+		t.Fatalf("kind=%q", got)
+	}
+}

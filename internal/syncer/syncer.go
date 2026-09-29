@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/nofumex/telegram-aggregator/internal/domain"
 	"github.com/nofumex/telegram-aggregator/internal/llm"
 	"github.com/nofumex/telegram-aggregator/internal/location"
+	"github.com/nofumex/telegram-aggregator/internal/mtproto"
 	"github.com/nofumex/telegram-aggregator/internal/parser"
 	"github.com/nofumex/telegram-aggregator/internal/ranking"
 	"github.com/nofumex/telegram-aggregator/internal/storage"
@@ -27,13 +29,18 @@ type Service struct {
 	mu             sync.Mutex
 	running        map[int64]bool
 	onProfileReady func(domain.Channel, domain.ChannelParsingProfile)
+	mt             *mtproto.Manager
 }
 
-func New(store *storage.Store, feed telegramfeed.Adapter, profileLLM *llm.OpenAICompatible, rank ranking.Engine, log *slog.Logger, concurrency int) *Service {
+func New(store *storage.Store, feed telegramfeed.Adapter, profileLLM *llm.OpenAICompatible, rank ranking.Engine, log *slog.Logger, concurrency int, account ...*mtproto.Manager) *Service {
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return &Service{store: store, feed: feed, llm: profileLLM, rank: rank, log: log, concurrency: concurrency, trigger: make(chan int64, 100), running: map[int64]bool{}}
+	s := &Service{store: store, feed: feed, llm: profileLLM, rank: rank, log: log, concurrency: concurrency, trigger: make(chan int64, 100), running: map[int64]bool{}}
+	if len(account) > 0 {
+		s.mt = account[0]
+	}
+	return s
 }
 func (s *Service) SetProfileReadyHandler(fn func(domain.Channel, domain.ChannelParsingProfile)) {
 	s.onProfileReady = fn
@@ -49,6 +56,13 @@ func (s *Service) Trigger(id int64) bool {
 func (s *Service) Check(ctx context.Context, id int64) error {
 	c, e := s.store.Channel(ctx, id)
 	if e != nil {
+		return e
+	}
+	if c.SourceType == "mtproto_group" {
+		if s.mt == nil {
+			return mtproto.ErrNotAuthorized
+		}
+		_, e := s.mt.Resolve(ctx, c.Username)
 		return e
 	}
 	return s.feed.Check(ctx, c.Username)
@@ -114,10 +128,40 @@ func (s *Service) SyncChannel(ctx context.Context, c domain.Channel) (result dom
 			return result, err
 		}
 	}
+	if c.SourceType == "auto" || c.SourceType == "" {
+		kind := ""
+		if s.mt != nil && s.mt.Authorized(ctx) {
+			if p, e := s.mt.Resolve(ctx, c.Username); e == nil {
+				kind = p.Kind
+				if p.Name != "" {
+					c.Name = p.Name
+				}
+			}
+		}
+		if kind == "" {
+			if sample, e := s.feed.Fetch(ctx, telegramfeed.FetchRequest{Username: c.Username, Limit: 1}); e == nil {
+				kind = sample.Kind
+				if sample.Name != "" {
+					c.Name = sample.Name
+				}
+			}
+		}
+		if kind == "" {
+			kind = "web_channel"
+		}
+		c.SourceType = kind
+		if err = s.store.SetChannelSourceType(ctx, c.ID, kind); err != nil {
+			return result, err
+		}
+		_ = s.store.ResolveChannel(ctx, c.ID, c.Username, c.Name, c.URL)
+	}
 	profileCreated := false
+	if c.Profile == nil && c.ProfileStatus == "error" {
+		return result, errors.New("профиль парсинга отсутствует; запустите re-analyze в админке")
+	}
 	if c.Profile == nil || c.ProfileStatus != "ready" {
 		var sample telegramfeed.FetchResult
-		sample, err = s.feed.Fetch(ctx, telegramfeed.FetchRequest{Username: c.Username, Limit: 5})
+		sample, err = s.fetch(ctx, c, telegramfeed.FetchRequest{Username: c.Username, Limit: 20})
 		if err != nil {
 			s.store.FailProfile(context.WithoutCancel(ctx), c.ID, err)
 			return result, err
@@ -126,12 +170,12 @@ func (s *Service) SyncChannel(ctx context.Context, c domain.Channel) (result dom
 			c.Name = sample.Name
 			_ = s.store.ResolveChannel(ctx, c.ID, c.Username, c.Name, c.URL)
 		}
-		posts := make([]domain.TelegramPost, 0, 5)
+		posts := make([]domain.TelegramPost, 0, 20)
 		for _, p := range sample.Posts {
 			if p.Text != "" {
 				posts = append(posts, p)
 			}
-			if len(posts) == 5 {
+			if len(posts) == 20 {
 				break
 			}
 		}
@@ -160,7 +204,7 @@ func (s *Service) SyncChannel(ctx context.Context, c domain.Channel) (result dom
 		after = 0
 	}
 	var fetched telegramfeed.FetchResult
-	fetched, err = s.feed.Fetch(ctx, telegramfeed.FetchRequest{Username: c.Username, AfterID: after, Limit: limit})
+	fetched, err = s.fetch(ctx, c, telegramfeed.FetchRequest{Username: c.Username, AfterID: after, Limit: limit})
 	if err != nil {
 		return result, err
 	}
@@ -172,6 +216,17 @@ func (s *Service) SyncChannel(ctx context.Context, c domain.Channel) (result dom
 			result.NewestAt = post.PublishedAt
 		}
 		listing := domain.Listing{ChannelID: c.ID, ChannelUsername: c.Username, ChannelName: c.Name, TelegramMessageID: post.MessageID, OriginalURL: post.URL, OriginalText: post.Text, PublishedAt: post.PublishedAt, City: c.City, Currency: "VND", Utilities: map[string]any{}, Amenities: map[string]bool{}, Confidence: domain.Confidence{}, RawValues: map[string]any{}, ExtractionVersion: c.Profile.Version, ExtractionStatus: "unparsed"}
+		if !parser.IsListing(*c.Profile, post.Text) {
+			listing.ExtractionStatus = "ignored_non_listing"
+			inserted, insertErr := s.store.InsertListing(ctx, post, listing)
+			if insertErr != nil {
+				return result, insertErr
+			}
+			if inserted {
+				result.Inserted++
+			}
+			continue
+		}
 		extracted, parseErr := parser.ParseWithProfile(*c.Profile, post, c.City)
 		now := time.Now().UTC()
 		listing.ProfileParsedAt = &now
@@ -202,6 +257,16 @@ func (s *Service) SyncChannel(ctx context.Context, c domain.Channel) (result dom
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) fetch(ctx context.Context, c domain.Channel, req telegramfeed.FetchRequest) (telegramfeed.FetchResult, error) {
+	if c.SourceType == "mtproto_group" {
+		if s.mt == nil {
+			return telegramfeed.FetchResult{}, mtproto.ErrNotAuthorized
+		}
+		return s.mt.Fetch(ctx, req)
+	}
+	return s.feed.Fetch(ctx, req)
 }
 
 func applyExtraction(l *domain.Listing, x domain.ProfileExtraction) {

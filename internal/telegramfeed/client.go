@@ -51,6 +51,7 @@ type FetchRequest struct {
 type FetchResult struct {
 	Posts []domain.TelegramPost
 	Name  string
+	Kind  string
 }
 type Adapter interface {
 	Resolve(context.Context, string) (username, name, canonicalURL string, err error)
@@ -172,6 +173,15 @@ func parseDocument(doc *xhtml.Node, username string) FetchResult {
 	walk = func(n *xhtml.Node) {
 		if n.Type == xhtml.ElementNode && n.Data == "meta" && attr(n, "property") == "og:title" {
 			result.Name = attr(n, "content")
+		}
+		if n.Type == xhtml.ElementNode && hasClass(n, "tgme_channel_info_counter") {
+			counter := strings.ToLower(nodeText(n))
+			if strings.Contains(counter, "member") {
+				result.Kind = "mtproto_group"
+			}
+			if strings.Contains(counter, "subscriber") {
+				result.Kind = "web_channel"
+			}
 		}
 		if n.Type == xhtml.ElementNode && hasClass(n, "tgme_widget_message") {
 			dataPost := attr(n, "data-post")

@@ -46,15 +46,17 @@ func Open(ctx context.Context, url string, poolSize ...int) (*Store, error) {
 }
 func (s *Store) Close() { s.DB.Close() }
 
-const channelCols = `id,username,url,name,city,enabled,polling_interval_seconds,parsing_profile,profile_status,profile_error,last_success_at,last_attempt_at,last_message_at,coalesce(last_message_id,0),posts_total,new_posts_last_run,consecutive_errors,last_error,next_poll_at,created_at`
-const dueProfileStatuses = "('pending','ready','error')"
+const channelCols = `id,username,url,name,source_type,city,enabled,polling_interval_seconds,parsing_profile,profile_status,profile_error,last_success_at,last_attempt_at,last_message_at,coalesce(last_message_id,0),posts_total,new_posts_last_run,consecutive_errors,last_error,next_poll_at,created_at`
+
+// Failed profiles are retried only after explicit admin re-analysis.
+const dueProfileStatuses = "('pending','ready')"
 const studioSearchPredicate = "(l.bedrooms=0 OR l.property_type='studio')"
 
 func scanChannel(row pgx.Row) (domain.Channel, error) {
 	var c domain.Channel
 	var sec int
 	var raw []byte
-	e := row.Scan(&c.ID, &c.Username, &c.URL, &c.Name, &c.City, &c.Enabled, &sec, &raw, &c.ProfileStatus, &c.ProfileError, &c.LastSuccessAt, &c.LastAttemptAt, &c.LastMessageAt, &c.LastMessageID, &c.PostsTotal, &c.NewPostsLastRun, &c.ConsecutiveErrors, &c.LastError, &c.NextPollAt, &c.CreatedAt)
+	e := row.Scan(&c.ID, &c.Username, &c.URL, &c.Name, &c.SourceType, &c.City, &c.Enabled, &sec, &raw, &c.ProfileStatus, &c.ProfileError, &c.LastSuccessAt, &c.LastAttemptAt, &c.LastMessageAt, &c.LastMessageID, &c.PostsTotal, &c.NewPostsLastRun, &c.ConsecutiveErrors, &c.LastError, &c.NextPollAt, &c.CreatedAt)
 	c.PollingInterval = time.Duration(sec) * time.Second
 	if len(raw) > 0 && string(raw) != "null" {
 		var p domain.ChannelParsingProfile
@@ -109,6 +111,10 @@ func (s *Store) ResolveChannel(ctx context.Context, id int64, username, name, ur
 	_, e := s.DB.Exec(ctx, "UPDATE telegram_channels SET username=$2,name=CASE WHEN name='' OR name LIKE '@%' THEN $3 ELSE name END,url=$4,updated_at=now() WHERE id=$1", id, username, name, url)
 	return e
 }
+func (s *Store) SetChannelSourceType(ctx context.Context, id int64, sourceType string) error {
+	_, e := s.DB.Exec(ctx, "UPDATE telegram_channels SET source_type=$2,updated_at=now() WHERE id=$1", id, sourceType)
+	return e
+}
 func (s *Store) SetProfilePending(ctx context.Context, id int64) error {
 	_, e := s.DB.Exec(ctx, "UPDATE telegram_channels SET parsing_profile=NULL,profile_status='pending',profile_error='',next_poll_at=now(),updated_at=now() WHERE id=$1", id)
 	return e
@@ -161,7 +167,7 @@ func (s *Store) InsertListing(ctx context.Context, p domain.TelegramPost, l doma
 	defer tx.Rollback(ctx)
 	hash := sha256.Sum256([]byte(p.Text))
 	var postID int64
-	e = tx.QueryRow(ctx, `INSERT INTO posts(channel_id,channel_username,message_id,original_url,original_text,published_at,photo_url,raw_payload,content_hash) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9) ON CONFLICT(channel_username,message_id) DO NOTHING RETURNING id`, l.ChannelID, p.ChannelUsername, p.MessageID, p.URL, p.Text, p.PublishedAt, p.PhotoURL, p.Raw, hash[:]).Scan(&postID)
+	e = tx.QueryRow(ctx, `INSERT INTO posts(channel_id,channel_username,message_id,original_url,original_text,published_at,photo_url,photo_data,photo_mime,raw_payload,content_hash) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,''),$10,$11) ON CONFLICT(channel_username,message_id) DO NOTHING RETURNING id`, l.ChannelID, p.ChannelUsername, p.MessageID, p.URL, p.Text, p.PublishedAt, p.PhotoURL, p.PhotoData, p.PhotoMime, p.Raw, hash[:]).Scan(&postID)
 	isNew := true
 	if e == pgx.ErrNoRows {
 		isNew = false
@@ -171,7 +177,7 @@ func (s *Store) InsertListing(ctx context.Context, p domain.TelegramPost, l doma
 		return false, e
 	}
 	if !isNew {
-		_, e = tx.Exec(ctx, `UPDATE posts SET original_url=$2,original_text=$3,published_at=$4,photo_url=NULLIF($5,''),raw_payload=$6,content_hash=$7,updated_at=now() WHERE id=$1`, postID, p.URL, p.Text, p.PublishedAt, p.PhotoURL, p.Raw, hash[:])
+		_, e = tx.Exec(ctx, `UPDATE posts SET original_url=$2,original_text=$3,published_at=$4,photo_url=NULLIF($5,''),photo_data=COALESCE($6,photo_data),photo_mime=COALESCE(NULLIF($7,''),photo_mime),raw_payload=$8,content_hash=$9,updated_at=now() WHERE id=$1`, postID, p.URL, p.Text, p.PublishedAt, p.PhotoURL, p.PhotoData, p.PhotoMime, p.Raw, hash[:])
 		if e != nil {
 			return false, e
 		}
@@ -186,12 +192,12 @@ func (s *Store) InsertListing(ctx context.Context, p domain.TelegramPost, l doma
 	return isNew, tx.Commit(ctx)
 }
 
-const listingSelect = `SELECT l.id,p.id,p.channel_id,p.channel_username,c.name,p.message_id,p.original_url,p.original_text,p.published_at,l.created_at,l.city,coalesce(l.zone,''),coalesce(l.district,''),coalesce(l.location_original,''),coalesce(l.street,''),coalesce(l.address,''),coalesce(l.building,''),l.rent_min,l.rent_max,l.deposit_amount,l.bedrooms,l.rooms,l.lease_months,l.area_m2,coalesce(l.property_type,''),coalesce(l.availability,''),coalesce(l.furnished,''),l.near_beach,l.beach_distance_m,l.amenities,l.is_oceanus,l.near_oceanus,l.utilities,l.confidence,l.raw_values,l.deal_score,l.score_confidence,CASE WHEN p.photo_url IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(p.photo_url) END,coalesce(l.extraction_version,''),l.extraction_status,l.profile_parsed_at,l.extraction_attempts,l.next_extraction_retry_at,coalesce(l.last_extraction_error,''),l.ranked_at FROM listings l JOIN posts p ON p.id=l.post_id JOIN telegram_channels c ON c.id=p.channel_id`
+const listingSelect = `SELECT l.id,p.id,p.channel_id,p.channel_username,c.name,p.message_id,p.original_url,p.original_text,p.published_at,l.created_at,l.city,coalesce(l.zone,''),coalesce(l.district,''),coalesce(l.location_original,''),coalesce(l.street,''),coalesce(l.address,''),coalesce(l.building,''),l.rent_min,l.rent_max,l.deposit_amount,l.bedrooms,l.rooms,l.lease_months,l.area_m2,coalesce(l.property_type,''),coalesce(l.availability,''),coalesce(l.furnished,''),l.near_beach,l.beach_distance_m,l.amenities,l.is_oceanus,l.near_oceanus,l.utilities,l.confidence,l.raw_values,l.deal_score,l.score_confidence,CASE WHEN p.photo_url IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(p.photo_url) END,p.photo_data,coalesce(p.photo_mime,''),coalesce(l.extraction_version,''),l.extraction_status,l.profile_parsed_at,l.extraction_attempts,l.next_extraction_retry_at,coalesce(l.last_extraction_error,''),l.ranked_at FROM listings l JOIN posts p ON p.id=l.post_id JOIN telegram_channels c ON c.id=p.channel_id`
 
 func scanListing(row pgx.Row) (domain.Listing, error) {
 	var l domain.Listing
 	var amenities, util, conf, raw, media []byte
-	e := row.Scan(&l.ID, &l.PostID, &l.ChannelID, &l.ChannelUsername, &l.ChannelName, &l.TelegramMessageID, &l.OriginalURL, &l.OriginalText, &l.PublishedAt, &l.CreatedAt, &l.City, &l.Zone, &l.District, &l.LocationOriginal, &l.Street, &l.Address, &l.Building, &l.RentMin, &l.RentMax, &l.DepositAmount, &l.Bedrooms, &l.Rooms, &l.LeaseMonths, &l.AreaM2, &l.PropertyType, &l.Availability, &l.Furnished, &l.NearBeach, &l.BeachDistanceM, &amenities, &l.IsOceanus, &l.NearOceanus, &util, &conf, &raw, &l.DealScore, &l.ScoreConfidence, &media, &l.ExtractionVersion, &l.ExtractionStatus, &l.ProfileParsedAt, &l.ExtractionAttempts, &l.NextExtractionRetryAt, &l.LastExtractionError, &l.RankedAt)
+	e := row.Scan(&l.ID, &l.PostID, &l.ChannelID, &l.ChannelUsername, &l.ChannelName, &l.TelegramMessageID, &l.OriginalURL, &l.OriginalText, &l.PublishedAt, &l.CreatedAt, &l.City, &l.Zone, &l.District, &l.LocationOriginal, &l.Street, &l.Address, &l.Building, &l.RentMin, &l.RentMax, &l.DepositAmount, &l.Bedrooms, &l.Rooms, &l.LeaseMonths, &l.AreaM2, &l.PropertyType, &l.Availability, &l.Furnished, &l.NearBeach, &l.BeachDistanceM, &amenities, &l.IsOceanus, &l.NearOceanus, &util, &conf, &raw, &l.DealScore, &l.ScoreConfidence, &media, &l.PhotoData, &l.PhotoMime, &l.ExtractionVersion, &l.ExtractionStatus, &l.ProfileParsedAt, &l.ExtractionAttempts, &l.NextExtractionRetryAt, &l.LastExtractionError, &l.RankedAt)
 	if e == nil {
 		l.Currency = "VND"
 		_ = json.Unmarshal(amenities, &l.Amenities)

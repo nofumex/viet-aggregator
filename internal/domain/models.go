@@ -19,9 +19,19 @@ type ChannelParsingProfile struct {
 	ChannelUsername    string               `json:"channel_username"`
 	Language           string               `json:"language"`
 	PostTypeIndicators []string             `json:"post_type_indicators"`
+	ListingDetection   ListingDetection     `json:"listing_detection"`
 	FieldRules         map[string]FieldRule `json:"field_rules"`
 	NullPolicy         string               `json:"null_policy"`
 	ExamplesSummary    string               `json:"examples_summary"`
+}
+
+// ListingDetection is generated once with the channel profile and then
+// executed locally. Exclude rules take precedence over include rules.
+type ListingDetection struct {
+	IncludeMarkers []string `json:"include_markers"`
+	ExcludeMarkers []string `json:"exclude_markers"`
+	IncludeRegex   []string `json:"include_regex"`
+	ExcludeRegex   []string `json:"exclude_regex"`
 }
 
 type FieldRule struct {
@@ -41,6 +51,7 @@ type Channel struct {
 	Username          string
 	URL               string
 	Name              string
+	SourceType        string
 	City              string
 	Enabled           bool
 	PollingInterval   time.Duration
@@ -66,6 +77,8 @@ type TelegramPost struct {
 	Text            string
 	PublishedAt     time.Time
 	PhotoURL        string
+	PhotoData       []byte
+	PhotoMime       string
 	Raw             json.RawMessage
 }
 
@@ -120,6 +133,8 @@ type Listing struct {
 	Confidence                      Confidence
 	DealScore, ScoreConfidence      float64
 	MediaURLs                       []string
+	PhotoData                       []byte
+	PhotoMime                       string
 	ExtractionVersion               string
 	ExtractionStatus                string
 	ProfileParsedAt                 *time.Time
@@ -136,6 +151,16 @@ type Listing struct {
 	ForeignerPrice                                     *int64
 	EstimatedMonthlyTotalMin, EstimatedMonthlyTotalMax *int64
 	Restrictions, RawValues                            map[string]any
+}
+
+type TelegramAccount struct {
+	APIID       int
+	APIHash     string
+	Phone       string
+	Status      string
+	LastError   string
+	ConnectedAt *time.Time
+	UpdatedAt   time.Time
 }
 
 type SearchFilter struct {

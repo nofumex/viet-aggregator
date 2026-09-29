@@ -48,7 +48,7 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 	for _, post := range posts {
 		samples = append(samples, map[string]any{"message_id": post.MessageID, "text": post.Text})
 	}
-	system := `Analyze the exact recurring rental-ad format of this single Telegram channel and produce a machine-executable extraction profile. Each field rule contains Go RE2-compatible regular expressions. Each regex must capture the extracted scalar in a named group (?P<value>...). patterns must be empty when the samples provide no reliable rule. post_type_indicators must be empty unless a marker is reliably present in every rental post. Mappings maps normalized lowercase captured values to canonical values. Canonical city values are da_nang/nha_trang, zones north/center/south/west, property types apartment/studio/house/room, and furnished values full/partial/none. amenities and utilities are JSON objects. unit is one of plain,vnd,million_vnd,m2,boolean,json. Never create a broad generic rental heuristic. Never guess missing values. is_oceanus means the Oceanus/Muong Thanh Vien Trieu complex itself; near_oceanus is only an explicitly stated immediate Oceanus vicinity, never Vinh Phuoc, Hon Chong, or all of north Nha Trang.`
+	system := `Analyze up to 20 recent messages from this single Telegram source in one response. Produce (1) channel-specific local listing_detection rules which distinguish rental listings from news, ads, questions and admin chatter, and (2) the exact recurring rental-ad extraction format. Include/exclude regexes must be Go RE2-compatible and must not be broad global rental heuristics; exclude rules have priority. Each field rule regex must capture the extracted scalar in a named group (?P<value>...). patterns must be empty when samples provide no reliable rule. Mappings maps normalized lowercase captured values to canonical values. Canonical city values are da_nang/nha_trang, zones north/center/south/west, property types apartment/studio/house/room, and furnished values full/partial/none. amenities and utilities are JSON objects. unit is one of plain,vnd,million_vnd,m2,boolean,json. Never guess missing values. is_oceanus means the Oceanus/Muong Thanh Vien Trieu complex itself; near_oceanus is only an explicitly stated immediate Oceanus vicinity, never Vinh Phuoc, Hon Chong, or all of north Nha Trang.`
 	in, _ := json.Marshal(map[string]any{"channel": "@" + username, "configured_city": city, "required_fields": ProfileFields, "real_posts": samples})
 	mapping := objectSchema(map[string]any{"from": stringSchema(), "to": stringSchema()}, []string{"from", "to"})
 	rule := objectSchema(map[string]any{"patterns": arrayStringSchema(), "value_group": enumSchema("value"), "value_type": enumSchema("string", "integer", "number", "boolean", "json"), "unit": enumSchema("plain", "vnd", "million_vnd", "m2", "boolean", "json"), "mappings": map[string]any{"type": "array", "items": mapping}}, []string{"patterns", "value_group", "value_type", "unit", "mappings"})
@@ -56,7 +56,8 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 	for _, key := range ProfileFields {
 		rules[key] = rule
 	}
-	schema := objectSchema(map[string]any{"version": stringSchema(), "channel_username": stringSchema(), "language": stringSchema(), "post_type_indicators": arrayStringSchema(), "field_rules": objectSchema(rules, ProfileFields), "null_policy": stringSchema(), "examples_summary": stringSchema()}, []string{"version", "channel_username", "language", "post_type_indicators", "field_rules", "null_policy", "examples_summary"})
+	detection := objectSchema(map[string]any{"include_markers": arrayStringSchema(), "exclude_markers": arrayStringSchema(), "include_regex": arrayStringSchema(), "exclude_regex": arrayStringSchema()}, []string{"include_markers", "exclude_markers", "include_regex", "exclude_regex"})
+	schema := objectSchema(map[string]any{"version": stringSchema(), "channel_username": stringSchema(), "language": stringSchema(), "post_type_indicators": arrayStringSchema(), "listing_detection": detection, "field_rules": objectSchema(rules, ProfileFields), "null_policy": stringSchema(), "examples_summary": stringSchema()}, []string{"version", "channel_username", "language", "post_type_indicators", "listing_detection", "field_rules", "null_policy", "examples_summary"})
 	raw, e := p.chatJSON(ctx, "channel_parsing_profile", system, string(in), schema)
 	if e != nil {
 		return domain.ChannelParsingProfile{}, raw, e
@@ -69,6 +70,8 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 	if profile.Version == "" {
 		profile.Version = "channel-profile-v1"
 	}
+	profile.ListingDetection.IncludeRegex = validRegex(profile.ListingDetection.IncludeRegex)
+	profile.ListingDetection.ExcludeRegex = validRegex(profile.ListingDetection.ExcludeRegex)
 	for _, key := range ProfileFields {
 		rule, ok := profile.FieldRules[key]
 		if !ok {
@@ -101,6 +104,16 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 		profile.FieldRules[key] = rule
 	}
 	return profile, raw, nil
+}
+
+func validRegex(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, pattern := range in {
+		if _, err := regexp.Compile(pattern); err == nil {
+			out = append(out, pattern)
+		}
+	}
+	return out
 }
 
 func (p *OpenAICompatible) chatJSON(ctx context.Context, name, system, user string, schema map[string]any) (string, error) {

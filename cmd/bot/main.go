@@ -16,6 +16,7 @@ import (
 	"github.com/nofumex/telegram-aggregator/internal/config"
 	"github.com/nofumex/telegram-aggregator/internal/exchange"
 	"github.com/nofumex/telegram-aggregator/internal/llm"
+	"github.com/nofumex/telegram-aggregator/internal/mtproto"
 	"github.com/nofumex/telegram-aggregator/internal/ranking"
 	"github.com/nofumex/telegram-aggregator/internal/storage"
 	"github.com/nofumex/telegram-aggregator/internal/syncer"
@@ -59,11 +60,12 @@ func main() {
 	}
 	profileLLM := llm.New(llm.Config{Provider: "compatible", BaseURL: cfg.ProfileLLM.BaseURL, APIKey: cfg.ProfileLLM.APIKey, Model: cfg.ProfileLLM.Model, Timeout: cfg.ProfileLLM.Timeout, Concurrency: 1})
 	rank := ranking.NewWithConfig(background.RankingConfig(ctx))
-	syncService := syncer.New(background, telegramfeed.New(), profileLLM, rank, log, cfg.WorkerConcurrency)
+	account := mtproto.New(background)
+	syncService := syncer.New(background, telegramfeed.New(), profileLLM, rank, log, cfg.WorkerConcurrency, account)
 	collectionService := collections.NewWithRanking(background, rank, log)
 	api := tg.NewClient(cfg.TelegramToken)
 	rates := exchange.NewCBR()
-	bot := tg.NewBot(api, store, syncService, collectionService, rates, cfg.AdminIDs, log, cfg.DefaultPoll)
+	bot := tg.NewBot(api, store, syncService, collectionService, rates, cfg.AdminIDs, log, cfg.DefaultPoll, account)
 	syncService.SetProfileReadyHandler(bot.NotifyProfileReady)
 	server := healthServer(cfg.HTTPAddr, store)
 	go func() {
@@ -73,6 +75,7 @@ func main() {
 		}
 	}()
 	go syncService.Run(ctx)
+	go account.Run(ctx)
 	go workers.RunReranking(ctx, background, rank, cfg, log)
 	go collectionService.Run(ctx, cfg.CollectionRefreshInterval, cfg.CollectionRefreshTimeout)
 	go rates.RunRefresh(ctx, 15*time.Minute)

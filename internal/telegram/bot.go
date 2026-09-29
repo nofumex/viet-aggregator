@@ -19,6 +19,7 @@ import (
 	"github.com/nofumex/telegram-aggregator/internal/collections"
 	"github.com/nofumex/telegram-aggregator/internal/domain"
 	"github.com/nofumex/telegram-aggregator/internal/exchange"
+	"github.com/nofumex/telegram-aggregator/internal/mtproto"
 	"github.com/nofumex/telegram-aggregator/internal/parser"
 	"github.com/nofumex/telegram-aggregator/internal/storage"
 	"github.com/nofumex/telegram-aggregator/internal/syncer"
@@ -34,6 +35,7 @@ type Bot struct {
 	admins      map[int64]bool
 	log         *slog.Logger
 	defaultPoll time.Duration
+	account     *mtproto.Manager
 	mu          sync.Mutex
 	states      map[int64]string
 	filters     map[int64]domain.SearchFilter
@@ -49,8 +51,12 @@ type pageCache struct {
 	filter  *domain.SearchFilter
 }
 
-func NewBot(api *Client, store *storage.Store, sync *syncer.Service, c *collections.Service, rates exchange.Provider, admins map[int64]bool, log *slog.Logger, poll time.Duration) *Bot {
-	return &Bot{api: api, store: store, sync: sync, collections: c, rates: rates, admins: admins, log: log, defaultPoll: poll, states: map[int64]string{}, filters: map[int64]domain.SearchFilter{}, pages: map[string]pageCache{}}
+func NewBot(api *Client, store *storage.Store, sync *syncer.Service, c *collections.Service, rates exchange.Provider, admins map[int64]bool, log *slog.Logger, poll time.Duration, account ...*mtproto.Manager) *Bot {
+	b := &Bot{api: api, store: store, sync: sync, collections: c, rates: rates, admins: admins, log: log, defaultPoll: poll, states: map[int64]string{}, filters: map[int64]domain.SearchFilter{}, pages: map[string]pageCache{}}
+	if len(account) > 0 {
+		b.account = account[0]
+	}
+	return b
 }
 
 func (b *Bot) NotifyProfileReady(channel domain.Channel, profile domain.ChannelParsingProfile) {
@@ -159,6 +165,33 @@ func (b *Bot) callback(ctx context.Context, q *CallbackQuery) {
 		if b.admins[q.From.ID] {
 			b.showGroups(ctx, q)
 		}
+	case "mtaccount":
+		if b.admins[q.From.ID] {
+			b.showTelegramAccount(ctx, q)
+		}
+	case "mteditid":
+		if b.admins[q.From.ID] {
+			b.setState(q.From.ID, "mt_api_id")
+			b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "Пришлите API ID.", back("mtaccount"))
+		}
+	case "mtedithash":
+		if b.admins[q.From.ID] {
+			b.setState(q.From.ID, "mt_api_hash")
+			b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "Пришлите API Hash. Сообщение будет удалено после сохранения.", back("mtaccount"))
+		}
+	case "mtlogin":
+		if b.admins[q.From.ID] {
+			b.setState(q.From.ID, "mt_phone")
+			b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "Пришлите номер телефона в международном формате, например <code>+849...</code>.", back("mtaccount"))
+		}
+	case "mtlogout":
+		if b.admins[q.From.ID] && b.account != nil {
+			if e := b.account.Logout(ctx); e != nil {
+				b.fail(ctx, q.Message.Chat.ID, q.Message.MessageID, e)
+			} else {
+				b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "MTProto session удалена. Аккаунт отключён.", back("mtaccount"))
+			}
+		}
 	case "ag":
 		if b.admins[q.From.ID] {
 			b.showGroup(ctx, q, parts)
@@ -171,7 +204,7 @@ func (b *Bot) callback(ctx context.Context, q *CallbackQuery) {
 	case "aaddcity":
 		if b.admins[q.From.ID] && len(parts) > 1 {
 			b.setState(q.From.ID, "add_channel:"+parts[1])
-			b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "Пришлите публичный канал: <code>@username</code>, <code>t.me/username</code> или <code>https://t.me/s/username</code>.", back("agroups"))
+			b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "Пришлите публичный канал или группу: <code>@username</code>, <code>t.me/username</code> или <code>https://t.me/s/username</code>.", back("agroups"))
 		}
 	case "async":
 		if b.admins[q.From.ID] && len(parts) > 1 {
@@ -185,7 +218,7 @@ func (b *Bot) callback(ctx context.Context, q *CallbackQuery) {
 			if err := b.store.SetProfilePending(ctx, id); err != nil {
 				b.fail(ctx, q.Message.Chat.ID, q.Message.MessageID, err)
 			} else if b.sync.Trigger(id) {
-				b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "♻️ Профиль сброшен. Пять свежих постов поставлены на единичный LLM-анализ; новый профиль будет применён к последним объявлениям.", back("ag:"+parts[1]))
+				b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "♻️ Профиль сброшен. До 20 свежих непустых сообщений поставлены на один LLM-анализ; новый профиль будет применён к последним объявлениям.", back("ag:"+parts[1]))
 			} else {
 				b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "Профиль сброшен. Фоновый worker подхватит переанализ по расписанию.", back("ag:"+parts[1]))
 			}
@@ -392,6 +425,16 @@ func (b *Bot) renderCard(ctx context.Context, chat int64, msg int, token string,
 	photos := photoURLs(l.MediaURLs)
 	rows = append(rows, []Button{cb("❤️ Сохранить", fmt.Sprintf("save:%d", l.ID)), cb("🙈 Скрыть", fmt.Sprintf("hide:%d", l.ID)), cb("Подробнее", fmt.Sprintf("detail:%d", l.ID))}, []Button{cb("◀️", fmt.Sprintf("page:%s:%d", token, prev)), cb(fmt.Sprintf("%d/%d", idx+1, c.total), "noop"), cb("▶️", fmt.Sprintf("page:%s:%d", token, next))}, []Button{cb("← Меню", "menu")})
 	k := Markup{rows}
+	if len(l.PhotoData) > 0 {
+		if msg > 0 {
+			_ = b.api.Delete(ctx, chat, msg)
+		}
+		if _, e := b.api.SendPhoto(ctx, chat, l.PhotoData, text, k); e == nil {
+			return
+		} else if b.log != nil {
+			b.log.Warn("stored MTProto photo unavailable; rendering text card", "listing_id", l.ID, "error", e)
+		}
+	}
 	if len(photos) > 0 {
 		photo, photoErr := b.api.DownloadPhoto(ctx, photos[0])
 		if msg > 0 {
@@ -651,8 +694,33 @@ func collectionPeriodMarkup(city string) Markup {
 }
 
 func (b *Bot) showAdmin(ctx context.Context, q *CallbackQuery) {
-	k := Markup{[][]Button{{cb("Telegram Channels", "agroups")}, {cb("← Меню", "menu")}}}
-	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🛠 Админка</b>\n\nИсточник: публичные Telegram web preview без пользовательской авторизации.", k)
+	k := Markup{[][]Button{{cb("Telegram Channels", "agroups")}, {cb("Telegram Account", "mtaccount")}, {cb("← Меню", "menu")}}}
+	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "<b>🛠 Админка</b>\n\nКаналы работают через web preview, публичные группы — через единый MTProto account.", k)
+}
+func (b *Bot) showTelegramAccount(ctx context.Context, q *CallbackQuery) {
+	if b.account == nil {
+		b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, "MTProto account manager недоступен.", back("admin"))
+		return
+	}
+	a, e := b.account.Account(ctx)
+	if e != nil {
+		b.fail(ctx, q.Message.Chat.ID, q.Message.MessageID, e)
+		return
+	}
+	masked := "—"
+	if len(a.APIHash) >= 8 {
+		masked = a.APIHash[:4] + "…" + a.APIHash[len(a.APIHash)-4:]
+	}
+	phone := a.Phone
+	if phone == "" {
+		phone = "—"
+	}
+	text := fmt.Sprintf("<b>Telegram Account</b>\n\nСтатус: <b>%s</b>\nAPI ID: <code>%d</code>\nAPI Hash: <code>%s</code>\nТелефон: <code>%s</code>", html.EscapeString(a.Status), a.APIID, html.EscapeString(masked), html.EscapeString(phone))
+	if a.LastError != "" {
+		text += "\nОшибка: <code>" + html.EscapeString(truncate(a.LastError, 300)) + "</code>"
+	}
+	k := Markup{[][]Button{{cb("API ID", "mteditid"), cb("API Hash", "mtedithash")}, {cb("Войти / войти заново", "mtlogin")}, {cb("Logout", "mtlogout")}, {cb("← Админка", "admin")}}}
+	b.editOrSend(ctx, q.Message.Chat.ID, q.Message.MessageID, text, k)
 }
 func (b *Bot) showGroups(ctx context.Context, q *CallbackQuery) {
 	groups, e := b.store.Channels(ctx)
@@ -691,7 +759,7 @@ func (b *Bot) showGroup(ctx context.Context, q *CallbackQuery, p []string) {
 	if g.LastMessageAt != nil {
 		lastMessage = ago(*g.LastMessageAt)
 	}
-	text := fmt.Sprintf("<b>%s</b>\n<code>@%s</code>\n\nГород: %s\nСтатус: %s\nПрофиль: %s\nИнтервал: %s\nПоследний успех: %s\nПоследнее сообщение: %s (#%d)\nВсего импортировано: %d\nНовых за цикл: %d", html.EscapeString(g.Name), html.EscapeString(g.Username), g.City, map[bool]string{true: "включён", false: "выключен"}[g.Enabled], g.ProfileStatus, g.PollingInterval, last, lastMessage, g.LastMessageID, g.PostsTotal, g.NewPostsLastRun)
+	text := fmt.Sprintf("<b>%s</b>\n<code>@%s</code>\n\nТип: %s\nГород: %s\nСтатус: %s\nПрофиль: %s\nИнтервал: %s\nПоследний успех: %s\nПоследнее сообщение: %s (#%d)\nВсего импортировано: %d\nНовых за цикл: %d", html.EscapeString(g.Name), html.EscapeString(g.Username), g.SourceType, g.City, map[bool]string{true: "включён", false: "выключен"}[g.Enabled], g.ProfileStatus, g.PollingInterval, last, lastMessage, g.LastMessageID, g.PostsTotal, g.NewPostsLastRun)
 	if g.LastError != "" {
 		text += "\nОшибка: <code>" + html.EscapeString(truncate(g.LastError, 300)) + "</code>"
 	}
@@ -750,6 +818,74 @@ func (b *Bot) checkGroup(ctx context.Context, q *CallbackQuery, p []string) {
 
 func (b *Bot) handleState(ctx context.Context, m *Message, state string) {
 	switch state {
+	case "mt_api_id":
+		if b.account == nil {
+			return
+		}
+		a, e := b.account.Account(ctx)
+		id, pErr := strconv.Atoi(strings.TrimSpace(m.Text))
+		if e == nil && pErr == nil {
+			e = b.account.Configure(ctx, id, a.APIHash, a.Phone)
+		}
+		if e != nil || pErr != nil {
+			b.send(ctx, m.Chat.ID, "Некорректный API ID.", back("mtaccount"))
+		} else {
+			b.send(ctx, m.Chat.ID, "API ID сохранён; MTProto client перезапускается.", back("mtaccount"))
+		}
+		return
+	case "mt_api_hash":
+		_ = b.api.Delete(ctx, m.Chat.ID, m.MessageID)
+		if b.account == nil {
+			return
+		}
+		a, e := b.account.Account(ctx)
+		if e == nil {
+			e = b.account.Configure(ctx, a.APIID, strings.TrimSpace(m.Text), a.Phone)
+		}
+		if e != nil {
+			b.send(ctx, m.Chat.ID, "Не удалось сохранить API Hash: "+html.EscapeString(e.Error()), back("mtaccount"))
+		} else {
+			b.send(ctx, m.Chat.ID, "API Hash сохранён; MTProto client перезапускается.", back("mtaccount"))
+		}
+		return
+	case "mt_phone":
+		if b.account == nil {
+			return
+		}
+		e := b.account.RequestCode(ctx, m.Text)
+		if e != nil {
+			b.send(ctx, m.Chat.ID, "Не удалось отправить код: "+html.EscapeString(e.Error()), back("mtaccount"))
+		} else {
+			b.setState(m.From.ID, "mt_code")
+			b.send(ctx, m.Chat.ID, "Код отправлен Telegram. Пришлите его следующим сообщением.", back("mtaccount"))
+		}
+		return
+	case "mt_code":
+		_ = b.api.Delete(ctx, m.Chat.ID, m.MessageID)
+		if b.account == nil {
+			return
+		}
+		needsPassword, e := b.account.SubmitCode(ctx, m.Text)
+		if e != nil {
+			b.send(ctx, m.Chat.ID, "Код не принят: "+html.EscapeString(e.Error()), back("mtaccount"))
+		} else if needsPassword {
+			b.setState(m.From.ID, "mt_password")
+			b.send(ctx, m.Chat.ID, "Аккаунт защищён 2FA. Пришлите пароль; сообщение будет удалено.", back("mtaccount"))
+		} else {
+			b.send(ctx, m.Chat.ID, "✅ Telegram Account авторизован.", back("mtaccount"))
+		}
+		return
+	case "mt_password":
+		_ = b.api.Delete(ctx, m.Chat.ID, m.MessageID)
+		if b.account == nil {
+			return
+		}
+		if e := b.account.SubmitPassword(ctx, m.Text); e != nil {
+			b.send(ctx, m.Chat.ID, "2FA пароль не принят: "+html.EscapeString(e.Error()), back("mtaccount"))
+		} else {
+			b.send(ctx, m.Chat.ID, "✅ Telegram Account авторизован.", back("mtaccount"))
+		}
+		return
 	case "poll_global":
 		d, e := time.ParseDuration(strings.TrimSpace(m.Text))
 		if e == nil && d >= 30*time.Second {
@@ -775,7 +911,7 @@ func (b *Bot) handleState(ctx context.Context, m *Message, state string) {
 			if e != nil {
 				b.send(ctx, m.Chat.ID, "Не удалось добавить канал: "+html.EscapeString(e.Error()), back("agroups"))
 			} else {
-				b.send(ctx, m.Chat.ID, "⏳ Канал @"+username+" добавлен. Получаю реальные посты и строю LLM-профиль в фоне…", back("ag:"+strconv.FormatInt(channel.ID, 10)))
+				b.send(ctx, m.Chat.ID, "⏳ Источник @"+username+" добавлен. Определяю тип, получаю реальные сообщения и строю LLM-профиль в фоне…", back("ag:"+strconv.FormatInt(channel.ID, 10)))
 			}
 			return
 		}

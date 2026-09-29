@@ -22,9 +22,9 @@ func TestStudioPredicateAcceptsBothRepresentations(t *testing.T) {
 	}
 }
 
-func TestProfileErrorsRemainDueForAutomaticRetry(t *testing.T) {
-	if !strings.Contains(dueProfileStatuses, "'error'") {
-		t.Fatalf("error status omitted from due statuses: %s", dueProfileStatuses)
+func TestProfileErrorsRequireExplicitReanalysis(t *testing.T) {
+	if strings.Contains(dueProfileStatuses, "'error'") {
+		t.Fatalf("error status would cause an automatic LLM retry: %s", dueProfileStatuses)
 	}
 }
 

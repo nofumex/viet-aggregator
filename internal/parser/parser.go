@@ -51,6 +51,37 @@ func RedactContact(s string) string {
 	return phone.ReplaceAllString(s, "[контакт в оригинале]")
 }
 
+// IsListing applies only the rules persisted in ChannelParsingProfile. It is
+// deliberately free of global rental heuristics and never calls an LLM.
+func IsListing(profile domain.ChannelParsingProfile, text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range profile.ListingDetection.ExcludeMarkers {
+		if marker != "" && strings.Contains(lower, strings.ToLower(marker)) {
+			return false
+		}
+	}
+	for _, pattern := range profile.ListingDetection.ExcludeRegex {
+		if re, err := regexp.Compile(pattern); err == nil && re.MatchString(text) {
+			return false
+		}
+	}
+	hasInclude := len(profile.ListingDetection.IncludeMarkers)+len(profile.ListingDetection.IncludeRegex) > 0
+	if !hasInclude {
+		return true
+	}
+	for _, marker := range profile.ListingDetection.IncludeMarkers {
+		if marker != "" && strings.Contains(lower, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	for _, pattern := range profile.ListingDetection.IncludeRegex {
+		if re, err := regexp.Compile(pattern); err == nil && re.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
 func ParseWithProfile(profile domain.ChannelParsingProfile, post domain.TelegramPost, configuredCity string) (domain.ProfileExtraction, error) {
 	out := domain.ProfileExtraction{Utilities: map[string]any{}, Confidence: domain.Confidence{}}
 	if len(profile.PostTypeIndicators) > 0 {
