@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/nofumex/telegram-aggregator/internal/domain"
 )
@@ -48,7 +49,7 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 	for _, post := range posts {
 		samples = append(samples, map[string]any{"message_id": post.MessageID, "text": post.Text})
 	}
-	system := `Analyze up to 20 recent messages from this single Telegram source in one response. Produce (1) channel-specific local listing_detection rules which distinguish rental listings from news, ads, questions and admin chatter, and (2) the exact recurring rental-ad extraction format. Include/exclude regexes must be Go RE2-compatible and must not be broad global rental heuristics; exclude rules have priority. Each field rule regex must capture the extracted scalar in a named group (?P<value>...). patterns must be empty when samples provide no reliable rule. Mappings maps normalized lowercase captured values to canonical values. Canonical city values are da_nang/nha_trang, zones north/center/south/west, property types apartment/studio/house/room, and furnished values full/partial/none. amenities and utilities are JSON objects. unit is one of plain,vnd,million_vnd,m2,boolean,json. Never guess missing values. is_oceanus means the Oceanus/Muong Thanh Vien Trieu complex itself; near_oceanus is only an explicitly stated immediate Oceanus vicinity, never Vinh Phuoc, Hon Chong, or all of north Nha Trang.`
+	system := `Analyze up to 20 recent messages from this single Telegram source in one response. Produce (1) channel-specific local listing_detection rules which distinguish rental listings from news, ads, questions and admin chatter, and (2) the exact recurring rental-ad extraction format. Include/exclude regexes must be Go RE2-compatible and must not be broad global rental heuristics; exclude rules have priority. Never use punctuation-only markers such as "-", "—", bullets or separators as include/exclude markers. post_type_indicators are descriptive metadata only and must never be required for detecting or parsing a listing. Each field rule regex must capture the extracted scalar in a named group (?P<value>...). patterns must be empty when samples provide no reliable rule. Mappings maps normalized lowercase captured values to canonical values. Canonical city values are da_nang/nha_trang, zones north/center/south/west, property types apartment/studio/house/room, and furnished values full/partial/none. amenities and utilities are JSON objects. unit is one of plain,vnd,million_vnd,m2,boolean,json. Never guess missing values. is_oceanus means the Oceanus/Muong Thanh Vien Trieu complex itself; near_oceanus is only an explicitly stated immediate Oceanus vicinity, never Vinh Phuoc, Hon Chong, or all of north Nha Trang.`
 	in, _ := json.Marshal(map[string]any{"channel": "@" + username, "configured_city": city, "required_fields": ProfileFields, "real_posts": samples})
 	mapping := objectSchema(map[string]any{"from": stringSchema(), "to": stringSchema()}, []string{"from", "to"})
 	rule := objectSchema(map[string]any{"patterns": arrayStringSchema(), "value_group": enumSchema("value"), "value_type": enumSchema("string", "integer", "number", "boolean", "json"), "unit": enumSchema("plain", "vnd", "million_vnd", "m2", "boolean", "json"), "mappings": map[string]any{"type": "array", "items": mapping}}, []string{"patterns", "value_group", "value_type", "unit", "mappings"})
@@ -72,6 +73,12 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 	}
 	profile.ListingDetection.IncludeRegex = validRegex(profile.ListingDetection.IncludeRegex)
 	profile.ListingDetection.ExcludeRegex = validRegex(profile.ListingDetection.ExcludeRegex)
+	profile.ListingDetection.IncludeMarkers = validMarkers(profile.ListingDetection.IncludeMarkers)
+	profile.ListingDetection.ExcludeMarkers = validMarkers(profile.ListingDetection.ExcludeMarkers)
+
+	// post_type_indicators are descriptive metadata only. ListingDetection is
+	// the sole gate deciding whether a message is a listing.
+	profile.PostTypeIndicators = nil
 	for _, key := range ProfileFields {
 		rule, ok := profile.FieldRules[key]
 		if !ok {
@@ -104,6 +111,28 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 		profile.FieldRules[key] = rule
 	}
 	return profile, raw, nil
+}
+
+func validMarkers(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, marker := range in {
+		marker = strings.TrimSpace(marker)
+		if len([]rune(marker)) < 2 {
+			continue
+		}
+		hasSignal := false
+		for _, r := range marker {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				hasSignal = true
+				break
+			}
+		}
+		if !hasSignal {
+			continue
+		}
+		out = append(out, marker)
+	}
+	return out
 }
 
 func validRegex(in []string) []string {

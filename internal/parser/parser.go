@@ -84,19 +84,6 @@ func IsListing(profile domain.ChannelParsingProfile, text string) bool {
 
 func ParseWithProfile(profile domain.ChannelParsingProfile, post domain.TelegramPost, configuredCity string) (domain.ProfileExtraction, error) {
 	out := domain.ProfileExtraction{Utilities: map[string]any{}, Confidence: domain.Confidence{}}
-	if len(profile.PostTypeIndicators) > 0 {
-		matched := false
-		lower := strings.ToLower(post.Text)
-		for _, v := range profile.PostTypeIndicators {
-			if strings.Contains(lower, strings.ToLower(v)) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return out, nil
-		}
-	}
 	values := map[string]any{}
 	for field, rule := range profile.FieldRules {
 		v, ok, e := extractRule(rule, post.Text)
@@ -110,6 +97,11 @@ func ParseWithProfile(profile domain.ChannelParsingProfile, post domain.Telegram
 	}
 	city := configuredCity
 	out.City = &city
+	// The channel city is explicitly configured by the admin and is therefore
+	// a trusted parsed field even when it is not repeated in every listing.
+	if city != "" {
+		out.ParsedFields++
+	}
 	setString := func(key string, target **string) {
 		if v, ok := values[key].(string); ok && v != "" {
 			*target = &v
