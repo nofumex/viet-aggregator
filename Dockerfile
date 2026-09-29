@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     ./cmd/bot
 
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/bot /usr/local/bin/bot
