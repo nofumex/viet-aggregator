@@ -79,6 +79,7 @@ type TelegramPost struct {
 	PhotoURL        string
 	PhotoData       []byte
 	PhotoMime       string
+	HasPhoto        bool
 	Raw             json.RawMessage
 }
 

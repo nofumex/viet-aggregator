@@ -1,6 +1,6 @@
 # Telegram Rental Aggregator
 
-Telegram-бот агрегирует аренду из публичных каналов через `https://t.me/s/<username>` и из публичных групп через один долгоживущий MTProto user-client. Web-preview каналов не зависит от MTProto account. Поддерживаются Da Nang и Nha Trang, быстрые cached-страницы, фильтры, избранное, скрытие объявлений, статистика, фоновые подборки и административная панель.
+Telegram-бот агрегирует аренду из публичных каналов через `https://t.me/s/<username>` и из публичных групп через отдельный лёгкий Python/Hydrogram sidecar. В Go-приложении MTProto-библиотеки нет. Web-preview каналов не зависит от MTProto account.
 
 ## Запуск
 
@@ -25,7 +25,7 @@ docker compose up -d --build
 - `@lowrentnt`
 - `lowrentnt`
 
-Ссылка нормализуется до canonical username. Broadcast channel автоматически остаётся на существующем web-preview scraper, public group/supergroup использует общий MTProto client и официальный `messages.getHistory`. В фоне бот:
+Ссылка нормализуется до canonical username. Broadcast channel автоматически остаётся на существующем web-preview scraper, public group/supergroup использует общий long-lived Hydrogram client через внутренний HTTP API. В фоне бот:
 
 1. получает до 20 последних непустых сообщений (минимум пять);
 2. делает один LLM-вызов и сохраняет машиноисполняемый `ChannelParsingProfile`, включая channel-specific include/exclude правила `is_listing`;
@@ -38,16 +38,17 @@ LLM больше нигде не вызывается, кроме явной а�
 ## Архитектура
 
 ```text
-Telegram web preview ─┐
-                      ├→ local is_listing → per-source profile parser → PostgreSQL
-one MTProto client  ──┘
+Telegram web preview ─────────────┐
+                                 ├→ local is_listing → per-source profile parser → PostgreSQL
+Python Hydrogram sidecar ← HTTP ──┘
                                              ├→ city-aware deterministic ranking
                                              ├→ cached collection snapshots
                                              └→ Telegram UI
 ```
 
 - `internal/telegramfeed` — URL normalization и HTML parsing публичного preview;
-- `internal/mtproto` — единственный reconnecting user-client, auth flow, history и первое фото групп;
+- `internal/mtproto` — маленький HTTP client к sidecar без MTProto-зависимостей;
+- `mtproto-service` — один long-lived Hydrogram Client, авторизация, history и бинарная выдача первого фото;
 - `internal/llm` — только создание профиля при добавлении канала;
 - `internal/parser` — локальное исполнение сохранённого профиля;
 - `internal/location` — data-driven normalization географии Nha Trang;

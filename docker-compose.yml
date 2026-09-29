@@ -8,9 +8,30 @@ services:
     env_file:
       - .env
 
+    environment:
+      MTPROTO_URL: http://mtproto:8081
+
+    depends_on:
+      mtproto:
+        condition: service_healthy
+
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/ready"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  mtproto:
+    build:
+      context: ./mtproto-service
+    image: viet-aggregator-mtproto
+    container_name: viet-aggregator-mtproto
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

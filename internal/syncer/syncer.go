@@ -227,6 +227,13 @@ func (s *Service) SyncChannel(ctx context.Context, c domain.Channel) (result dom
 			}
 			continue
 		}
+		if c.SourceType == "mtproto_group" && post.HasPhoto && s.mt != nil {
+			if photo, mime, photoErr := s.mt.Photo(ctx, c.Username, post.MessageID); photoErr == nil {
+				post.PhotoData, post.PhotoMime = photo, mime
+			} else if s.log != nil {
+				s.log.Warn("group photo unavailable", "channel", c.Username, "message_id", post.MessageID, "error", photoErr)
+			}
+		}
 		extracted, parseErr := parser.ParseWithProfile(*c.Profile, post, c.City)
 		now := time.Now().UTC()
 		listing.ProfileParsedAt = &now
