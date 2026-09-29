@@ -51,7 +51,7 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 	system := `Analyze the exact recurring rental-ad format of this single Telegram channel and produce a machine-executable extraction profile. Each field rule contains Go RE2-compatible regular expressions. Each regex must capture the extracted scalar in a named group (?P<value>...). patterns must be empty when the samples provide no reliable rule. post_type_indicators must be empty unless a marker is reliably present in every rental post. Mappings maps normalized lowercase captured values to canonical values. Canonical city values are da_nang/nha_trang, zones north/center/south/west, property types apartment/studio/house/room, and furnished values full/partial/none. amenities and utilities are JSON objects. unit is one of plain,vnd,million_vnd,m2,boolean,json. Never create a broad generic rental heuristic. Never guess missing values. is_oceanus means the Oceanus/Muong Thanh Vien Trieu complex itself; near_oceanus is only an explicitly stated immediate Oceanus vicinity, never Vinh Phuoc, Hon Chong, or all of north Nha Trang.`
 	in, _ := json.Marshal(map[string]any{"channel": "@" + username, "configured_city": city, "required_fields": ProfileFields, "real_posts": samples})
 	mapping := objectSchema(map[string]any{"from": stringSchema(), "to": stringSchema()}, []string{"from", "to"})
-	rule := objectSchema(map[string]any{"patterns": arrayStringSchema(), "value_group": stringSchema(), "value_type": enumSchema("string", "integer", "number", "boolean", "json"), "unit": enumSchema("plain", "vnd", "million_vnd", "m2", "boolean", "json"), "mappings": map[string]any{"type": "array", "items": mapping}}, []string{"patterns", "value_group", "value_type", "unit", "mappings"})
+	rule := objectSchema(map[string]any{"patterns": arrayStringSchema(), "value_group": enumSchema("value"), "value_type": enumSchema("string", "integer", "number", "boolean", "json"), "unit": enumSchema("plain", "vnd", "million_vnd", "m2", "boolean", "json"), "mappings": map[string]any{"type": "array", "items": mapping}}, []string{"patterns", "value_group", "value_type", "unit", "mappings"})
 	rules := map[string]any{}
 	for _, key := range ProfileFields {
 		rules[key] = rule
@@ -74,19 +74,31 @@ func (p *OpenAICompatible) AnalyzeProfile(ctx context.Context, username, city st
 		if !ok {
 			return profile, raw, fmt.Errorf("profile missing rule %s", key)
 		}
-		if rule.ValueGroup == "" {
-			rule.ValueGroup = "value"
+
+		rule.ValueGroup = "value"
+
+		// City is configured explicitly when the channel is added.
+		if key == "city" {
+			rule.Patterns = nil
 			profile.FieldRules[key] = rule
+			continue
 		}
+
+		// Ignore individual malformed LLM regexes instead of rejecting
+		// the entire channel parsing profile.
+		valid := make([]string, 0, len(rule.Patterns))
 		for _, pattern := range rule.Patterns {
 			compiled, compileErr := regexp.Compile(pattern)
 			if compileErr != nil {
-				return profile, raw, fmt.Errorf("invalid %s pattern: %w", key, compileErr)
+				continue
 			}
-			if compiled.SubexpIndex(rule.ValueGroup) < 0 {
-				return profile, raw, fmt.Errorf("%s pattern has no %q capture", key, rule.ValueGroup)
+			if compiled.SubexpIndex("value") < 0 {
+				continue
 			}
+			valid = append(valid, pattern)
 		}
+		rule.Patterns = valid
+		profile.FieldRules[key] = rule
 	}
 	return profile, raw, nil
 }

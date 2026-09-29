@@ -108,7 +108,6 @@ func ParseWithProfile(profile domain.ChannelParsingProfile, post domain.Telegram
 			*target = &v
 		}
 	}
-	setString("city", &out.City)
 	setString("zone", &out.Zone)
 	setString("district_area", &out.District)
 	setString("street", &out.Street)
