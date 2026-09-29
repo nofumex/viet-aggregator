@@ -27,3 +27,10 @@ func TestProfileErrorsRemainDueForAutomaticRetry(t *testing.T) {
 		t.Fatalf("error status omitted from due statuses: %s", dueProfileStatuses)
 	}
 }
+
+func TestScoreOrderBreaksTiesByNewestListing(t *testing.T) {
+	want := "l.deal_score DESC,p.published_at DESC,l.id DESC"
+	if got := listingOrder("score"); got != want {
+		t.Fatalf("order=%q want=%q", got, want)
+	}
+}

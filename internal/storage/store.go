@@ -326,12 +326,7 @@ func (s *Store) Search(ctx context.Context, user int64, f domain.SearchFilter) (
 	if offset >= total {
 		return domain.SearchPage{Total: total}, nil
 	}
-	order := "l.deal_score DESC,p.published_at DESC,l.id DESC"
-	if f.Sort == "new" {
-		order = "p.published_at DESC,l.id DESC"
-	} else if f.Sort == "price" {
-		order = "l.rent_min ASC,l.id DESC"
-	}
+	order := listingOrder(f.Sort)
 	args = append(args, limit, offset)
 	rows, e := s.DB.Query(ctx, listingSelect+w+fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", order, len(args)-1, len(args)), args...)
 	if e != nil {
@@ -347,6 +342,17 @@ func (s *Store) Search(ctx context.Context, user int64, f domain.SearchFilter) (
 		out.Items = append(out.Items, l)
 	}
 	return out, rows.Err()
+}
+
+func listingOrder(sort string) string {
+	switch sort {
+	case "new":
+		return "p.published_at DESC,l.id DESC"
+	case "price":
+		return "l.rent_min ASC,l.id DESC"
+	default:
+		return "l.deal_score DESC,p.published_at DESC,l.id DESC"
+	}
 }
 
 func normalizeSearchWindow(limit, offset, maxResults, total int) (int, int, int) {

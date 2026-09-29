@@ -114,48 +114,31 @@ func (s *Service) refreshPeriod(ctx context.Context, city string, days int) erro
 }
 
 type buildStats struct {
-	totalPeriod, normalized, qualityPassed int
+	totalPeriod, selected int
 }
 
 func (s *Service) build(ctx context.Context, city string, days int) ([]domain.CollectionItem, buildStats, error) {
 	after := time.Now().Add(-time.Duration(normalizedDays(days)) * 24 * time.Hour)
-	const pageSize = 250
-	var candidates []domain.Listing
 	var stats buildStats
-	for offset := 0; ; offset += pageSize {
-		page, err := s.store.Search(ctx, 0, domain.SearchFilter{City: city, FreshAfter: &after, Sort: "score", Limit: pageSize, Offset: offset})
-		if err != nil {
-			return nil, stats, err
-		}
-		if offset == 0 {
-			stats.totalPeriod = page.Total
-		}
-		for _, listing := range page.Items {
-			if listing.ExtractionStatus == "success" {
-				stats.normalized++
-			}
-			if IsEligible(listing) {
-				candidates = append(candidates, listing)
-			}
-		}
-		if len(page.Items) < pageSize || len(candidates) >= 200 || page.Items[len(page.Items)-1].DealScore < MinimumDealScore {
-			break
-		}
+	page, err := s.store.Search(ctx, 0, domain.SearchFilter{City: city, FreshAfter: &after, Sort: "score", Limit: 15})
+	if err != nil {
+		return nil, stats, err
 	}
-	stats.qualityPassed = len(candidates)
+	stats.totalPeriod = page.Total
 
-	items := make([]domain.CollectionItem, 0, 15)
-	for i, listing := range candidates {
+	items := make([]domain.CollectionItem, 0, min(15, len(page.Items)))
+	for i, listing := range page.Items {
 		if i >= 15 {
 			break
 		}
-		items = append(items, domain.CollectionItem{Listing: listing, Reason: localReason(listing), Rank: i + 1})
+		items = append(items, domain.CollectionItem{Listing: listing, Reason: fmt.Sprintf("Deal score %.0f/100.", listing.DealScore), Rank: i + 1})
 	}
+	stats.selected = len(items)
 	return items, stats, nil
 }
 
 func (s *Service) logBuilt(city string, days int, items []domain.CollectionItem, stats buildStats) {
-	attrs := []any{"city", city, "days", days, "total_period", stats.totalPeriod, "normalized", stats.normalized, "quality_passed", stats.qualityPassed, "shortlist", min(stats.qualityPassed, 40), "selected", len(items)}
+	attrs := []any{"city", city, "days", days, "total_period", stats.totalPeriod, "selected", stats.selected}
 	if len(items) > 0 {
 		oldest, newest := items[0].PublishedAt, items[0].PublishedAt
 		for _, item := range items {

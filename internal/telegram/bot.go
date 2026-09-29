@@ -393,18 +393,17 @@ func (b *Bot) renderCard(ctx context.Context, chat int64, msg int, token string,
 	rows = append(rows, []Button{cb("❤️ Сохранить", fmt.Sprintf("save:%d", l.ID)), cb("🙈 Скрыть", fmt.Sprintf("hide:%d", l.ID)), cb("Подробнее", fmt.Sprintf("detail:%d", l.ID))}, []Button{cb("◀️", fmt.Sprintf("page:%s:%d", token, prev)), cb(fmt.Sprintf("%d/%d", idx+1, c.total), "noop"), cb("▶️", fmt.Sprintf("page:%s:%d", token, next))}, []Button{cb("← Меню", "menu")})
 	k := Markup{rows}
 	if len(photos) > 0 {
-		if currentPhoto && msg > 0 {
-			if err := b.api.EditPhoto(ctx, chat, msg, photos[0], text, k); err == nil {
-				return
-			}
-			_ = b.api.Delete(ctx, chat, msg)
-		} else if msg > 0 {
+		photo, photoErr := b.api.DownloadPhoto(ctx, photos[0])
+		if msg > 0 {
 			_ = b.api.Delete(ctx, chat, msg)
 		}
-		if _, err := b.api.SendPhoto(ctx, chat, photos[0], text, k); err == nil {
+		if photoErr == nil {
+			_, photoErr = b.api.SendPhoto(ctx, chat, photo, text, k)
+		}
+		if photoErr == nil {
 			return
 		} else if b.log != nil {
-			b.log.Warn("photo card unavailable; rendering text card", "listing_id", l.ID, "error", err)
+			b.log.Warn("photo card unavailable; rendering text card", "listing_id", l.ID, "error", photoErr)
 		}
 		_, err := b.api.Send(ctx, chat, text, k)
 		if err != nil && b.log != nil {

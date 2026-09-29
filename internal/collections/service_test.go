@@ -156,3 +156,29 @@ func TestSnapshotsAreIsolatedByCityAndPeriod(t *testing.T) {
 		t.Fatalf("collection searches were not city-scoped: %+v", store.filters)
 	}
 }
+
+func TestBuildReturnsTop15WithoutQualityGates(t *testing.T) {
+	items := make([]domain.Listing, 20)
+	for i := range items {
+		items[i] = domain.Listing{ID: int64(i + 1), DealScore: float64(20 - i), PublishedAt: time.Now().Add(-time.Duration(i) * time.Minute)}
+	}
+	store := &snapshotStore{items: items}
+	svc := newService(store, nil)
+	got, _, err := svc.build(context.Background(), domain.CityDaNang, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 15 {
+		t.Fatalf("got %d items, want 15", len(got))
+	}
+	if got[0].ID != 1 || got[14].ID != 15 {
+		t.Fatalf("unexpected TOP-15 boundaries: first=%d last=%d", got[0].ID, got[14].ID)
+	}
+	if store.calls != 1 || len(store.filters) != 1 {
+		t.Fatalf("calls=%d filters=%+v", store.calls, store.filters)
+	}
+	f := store.filters[0]
+	if f.City != domain.CityDaNang || f.FreshAfter == nil || f.Sort != "score" || f.Limit != 15 || f.Offset != 0 {
+		t.Fatalf("filter=%+v", f)
+	}
+}

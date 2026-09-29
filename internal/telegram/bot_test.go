@@ -1,7 +1,11 @@
 package telegram
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/nofumex/telegram-aggregator/internal/domain"
 )
@@ -40,5 +44,29 @@ func TestCardRateReadUsesMemoryProvider(t *testing.T) {
 	b := &Bot{rates: cachedRate(.003125)}
 	if got := b.vndToRUB(); got != .003125 {
 		t.Fatalf("rate=%v", got)
+	}
+}
+
+func TestPhotoFailureFallsBackToTextCard(t *testing.T) {
+	textSent := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/broken.jpg":
+			http.Error(w, "broken", http.StatusBadGateway)
+		case "/sendMessage":
+			textSent = true
+			telegramOK(w)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	api := &Client{base: srv.URL, http: srv.Client(), mediaHTTP: srv.Client(), maxPhotoBytes: 1024}
+	bot := &Bot{api: api, pages: map[string]pageCache{
+		"page": {items: []domain.Listing{{ID: 1, OriginalURL: "https://t.me/example/1", MediaURLs: []string{srv.URL + "/broken.jpg"}, PublishedAt: time.Now()}}, total: 1, until: time.Now().Add(time.Minute)},
+	}}
+	bot.renderCard(context.Background(), 1, 0, "page", 0, false)
+	if !textSent {
+		t.Fatal("text fallback was not sent")
 	}
 }
