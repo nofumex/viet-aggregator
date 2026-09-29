@@ -166,8 +166,12 @@ func (s *Store) InsertListing(ctx context.Context, p domain.TelegramPost, l doma
 	}
 	defer tx.Rollback(ctx)
 	hash := sha256.Sum256([]byte(p.Text))
+	raw := p.Raw
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
 	var postID int64
-	e = tx.QueryRow(ctx, `INSERT INTO posts(channel_id,channel_username,message_id,original_url,original_text,published_at,photo_url,photo_data,photo_mime,raw_payload,content_hash) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,''),$10,$11) ON CONFLICT(channel_username,message_id) DO NOTHING RETURNING id`, l.ChannelID, p.ChannelUsername, p.MessageID, p.URL, p.Text, p.PublishedAt, p.PhotoURL, p.PhotoData, p.PhotoMime, p.Raw, hash[:]).Scan(&postID)
+	e = tx.QueryRow(ctx, `INSERT INTO posts(channel_id,channel_username,message_id,original_url,original_text,published_at,photo_url,photo_data,photo_mime,raw_payload,content_hash) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,''),$10,$11) ON CONFLICT(channel_username,message_id) DO NOTHING RETURNING id`, l.ChannelID, p.ChannelUsername, p.MessageID, p.URL, p.Text, p.PublishedAt, p.PhotoURL, p.PhotoData, p.PhotoMime, raw, hash[:]).Scan(&postID)
 	isNew := true
 	if e == pgx.ErrNoRows {
 		isNew = false
@@ -177,7 +181,7 @@ func (s *Store) InsertListing(ctx context.Context, p domain.TelegramPost, l doma
 		return false, e
 	}
 	if !isNew {
-		_, e = tx.Exec(ctx, `UPDATE posts SET original_url=$2,original_text=$3,published_at=$4,photo_url=NULLIF($5,''),photo_data=COALESCE($6,photo_data),photo_mime=COALESCE(NULLIF($7,''),photo_mime),raw_payload=$8,content_hash=$9,updated_at=now() WHERE id=$1`, postID, p.URL, p.Text, p.PublishedAt, p.PhotoURL, p.PhotoData, p.PhotoMime, p.Raw, hash[:])
+		_, e = tx.Exec(ctx, `UPDATE posts SET original_url=$2,original_text=$3,published_at=$4,photo_url=NULLIF($5,''),photo_data=COALESCE($6,photo_data),photo_mime=COALESCE(NULLIF($7,''),photo_mime),raw_payload=$8,content_hash=$9,updated_at=now() WHERE id=$1`, postID, p.URL, p.Text, p.PublishedAt, p.PhotoURL, p.PhotoData, p.PhotoMime, raw, hash[:])
 		if e != nil {
 			return false, e
 		}
